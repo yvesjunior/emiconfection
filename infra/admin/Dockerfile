@@ -1,4 +1,4 @@
-FROM php:8.2-apache
+FROM php:8.2-apache-bullseye
 LABEL org.opencontainers.image.authors="yvesjuniorbationo@gmail.com"
 
 ENV DEBIAN_FRONTEND=noninteractive
