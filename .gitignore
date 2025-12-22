@@ -1,0 +1,9 @@
+src/database/*
+src/database/data
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+*.env
