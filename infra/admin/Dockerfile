@@ -3,7 +3,7 @@ LABEL org.opencontainers.image.authors="yvesjuniorbationo@gmail.com"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install PHP extensions and dependencies
+# Install PHP extensions and dependencies for Laravel 5.8
 RUN apt-get update && apt-get install -y \
     vim \
     net-tools \
@@ -12,9 +12,8 @@ RUN apt-get update && apt-get install -y \
     libpng-dev \
     libjpeg-dev \
     libfreetype6-dev \
-    libpq-dev \
     libxml2-dev \
-    libreadline-dev \
+    libonig-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j$(nproc) \
         intl \
@@ -22,9 +21,10 @@ RUN apt-get update && apt-get install -y \
         gd \
         pdo_mysql \
         mysqli \
-        pdo_pgsql \
+        mbstring \
         xml \
         opcache \
+        bcmath \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
