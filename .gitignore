@@ -7,3 +7,6 @@ src/database/data
 !.env.example
 !.env.sample
 *.env
+
+# Exclude system-pos
+system-pos/
