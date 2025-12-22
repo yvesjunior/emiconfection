@@ -1,6 +1,9 @@
 #!/bin/bash
 
-source /etc/apache2/envvars
+# Source Apache envvars if available
+if [ -f /etc/apache2/envvars ]; then
+    source /etc/apache2/envvars
+fi
 
 # Install Composer dependencies if vendor directory doesn't exist
 if [ ! -d "/var/www/app/public/project/vendor" ]; then
@@ -10,5 +13,5 @@ if [ ! -d "/var/www/app/public/project/vendor" ]; then
     chown -R www-data:www-data /var/www/app/public/project/vendor
 fi
 
-#tail -F /var/log/apache2/* &
-exec apache2 -D FOREGROUND
+# Start Apache in foreground
+exec apache2-foreground
