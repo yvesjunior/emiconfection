@@ -7,6 +7,12 @@
 
 set -e
 
+# Load environment variables from .env if it exists
+if [ -f .env ]; then
+    # Export only valid shell variables (skip sections like [database])
+    export $(grep -v '^#' .env | grep -v '^\[' | grep '=' | xargs)
+fi
+
 echo "🚀 POS System Post-Deployment Setup"
 echo "===================================="
 
@@ -44,17 +50,22 @@ until curl -s http://localhost:${POS_API_PORT:-3001}/health > /dev/null 2>&1; do
 done
 echo -e " ${GREEN}Ready!${NC}"
 
-# Run database migrations
-echo -e "\n${YELLOW}📦 Running database migrations...${NC}"
-docker-compose exec -T pos_api npx prisma migrate deploy
+# Sync database schema (creates tables from schema.prisma)
+echo -e "\n${YELLOW}📦 Syncing database schema...${NC}"
+docker-compose exec -T pos_api npx prisma db push --accept-data-loss
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✅ Migrations completed successfully${NC}"
+    echo -e "${GREEN}✅ Database schema synced successfully${NC}"
 else
-    echo -e "${RED}❌ Migration failed!${NC}"
+    echo -e "${RED}❌ Schema sync failed!${NC}"
     echo "Check logs: docker logs pos_api"
     exit 1
 fi
+
+# Generate Prisma client (in case of schema changes)
+echo -e "${YELLOW}🔧 Generating Prisma client...${NC}"
+docker-compose exec -T pos_api npx prisma generate
+echo -e "${GREEN}✅ Prisma client generated${NC}"
 
 # Check if database has data
 echo -e "\n${YELLOW}🔍 Checking database...${NC}"
@@ -66,9 +77,14 @@ else
     echo -e "${RED}⚠️  No tables found - migrations may have failed${NC}"
 fi
 
-# Check if admin user exists
+# Check if admin user exists and seed if needed
 echo -e "\n${YELLOW}👤 Checking for admin user...${NC}"
-ADMIN_EXISTS=$(docker-compose exec -T pos_postgres psql -U postgres -d pos_system -t -c "SELECT COUNT(*) FROM employees WHERE email = 'admin@pos.local';" 2>/dev/null | tr -d ' ' || echo "0")
+ADMIN_EXISTS=$(docker-compose exec -T pos_postgres psql -U postgres -d pos_system -t -c "SELECT COUNT(*) FROM employees WHERE email = 'admin@pos.local';" 2>/dev/null | tr -d ' \n' || echo "0")
+
+# Handle empty or non-numeric response
+if ! [[ "$ADMIN_EXISTS" =~ ^[0-9]+$ ]]; then
+    ADMIN_EXISTS=0
+fi
 
 if [ "$ADMIN_EXISTS" -gt 0 ]; then
     echo -e "${GREEN}✅ Admin user exists${NC}"
