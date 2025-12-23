@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Fix permissions on mounted volume
+chown -R www-data:www-data /var/www/app 2>/dev/null || true
+
 # Install Composer dependencies if vendor directory doesn't exist
 if [ -d "/var/www/app/public/project" ] && [ ! -d "/var/www/app/public/project/vendor" ]; then
     echo "Installing Composer dependencies..."
@@ -9,14 +12,9 @@ if [ -d "/var/www/app/public/project" ] && [ ! -d "/var/www/app/public/project/v
     # Remove old lock file if it causes issues
     rm -f composer.lock
     
-    # Install dependencies
-    composer install --no-interaction --no-dev --optimize-autoloader --ignore-platform-reqs || echo "Composer install failed, continuing..."
-    
-    # Set permissions
-    if [ -d "vendor" ]; then
-        chown -R www-data:www-data /var/www/app/public/project/vendor
-    fi
+    # Install dependencies as www-data or root
+    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --no-dev --optimize-autoloader --ignore-platform-reqs || echo "Composer install failed, continuing..."
 fi
 
-# Start the thecodingmachine entrypoint
-exec /usr/local/bin/apache2-foreground
+# Start Apache
+exec apache2-foreground
