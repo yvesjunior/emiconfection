@@ -3,6 +3,8 @@ services:
     emi_db:
         image: mariadb:10.6
         container_name: emi_db
+        security_opt:
+            - seccomp:unconfined
         environment:
             - MYSQL_ROOT_PASSWORD=Emishops22!
             - MYSQL_DATABASE=emishops
@@ -23,6 +25,8 @@ services:
     emi_db_init:
         image: mariadb:10.6
         container_name: emi_db_init
+        security_opt:
+            - seccomp:unconfined
         depends_on:
             emi_db:
                 condition: service_healthy
@@ -41,6 +45,8 @@ services:
     emi_phpmyadmin:
         image: phpmyadmin/phpmyadmin
         container_name: emi_phpmyadmin
+        security_opt:
+            - seccomp:unconfined
         depends_on:
             emi_db_init:
                 condition: service_completed_successfully
@@ -59,6 +65,8 @@ services:
     emi_admin:
         container_name: emi_admin
         build: ./infra/admin
+        security_opt:
+            - seccomp:unconfined
         depends_on:
             emi_db_init:
                 condition: service_completed_successfully
