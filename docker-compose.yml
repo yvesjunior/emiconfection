@@ -1,83 +1,173 @@
 services:
 
-    emi_db:
-        image: mariadb:10.6
-        container_name: emi_db
-        security_opt:
-            - seccomp:unconfined
-        environment:
-            - MYSQL_ROOT_PASSWORD=Emishops22!
-            - MYSQL_DATABASE=emishops
-        volumes:
-            - ./infra/database/mysql:/docker-entrypoint-initdb.d/
-            - "${DATABASE_FOLDER}:/var/lib/mysql"
-        ports:
-            - "${DATABASE_PORT}:3306"
-        networks:
-            - emi_network
-        restart: always
-        healthcheck:
-            test: ["CMD", "mariadb", "-u", "root", "-pEmishops22!", "-e", "SELECT 1"]
-            interval: 5s
-            timeout: 5s
-            retries: 20
+  # =============================================================================
+  # LEGACY E-COMMERCE (src/web) - MariaDB + PHP/Laravel
+  # =============================================================================
 
-    emi_db_init:
-        image: mariadb:10.6
-        container_name: emi_db_init
-        security_opt:
-            - seccomp:unconfined
-        depends_on:
-            emi_db:
-                condition: service_healthy
-        environment:
-            - DB_HOST=emi_db
-            - DB_USER=root
-            - DB_PASSWORD=Emishops22!
-            - DB_NAME=emishops
-        volumes:
-            - ./scripts:/scripts:ro
-        entrypoint: ["/bin/bash", "/scripts/init-db.sh"]
-        networks:
-            - emi_network
-        restart: "no"
+  emi_db:
+    image: mariadb:10.6
+    container_name: emi_db
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - MYSQL_ROOT_PASSWORD=Emishops22!
+      - MYSQL_DATABASE=emishops
+    volumes:
+      - ./infra/database/mysql:/docker-entrypoint-initdb.d/
+      - "${DATABASE_FOLDER:-./src/database/data}:/var/lib/mysql"
+    ports:
+      - "${DATABASE_PORT:-3306}:3306"
+    networks:
+      - emi_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "mariadb", "-u", "root", "-pEmishops22!", "-e", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
-    emi_phpmyadmin:
-        image: phpmyadmin/phpmyadmin
-        container_name: emi_phpmyadmin
-        security_opt:
-            - seccomp:unconfined
-        depends_on:
-            emi_db_init:
-                condition: service_completed_successfully
-        environment:
-            - MYSQL_USERNAME=root
-            - MYSQL_ROOT_PASSWORD=Emishops22!
-            - PMA_HOST=emi_db
-        restart: always
-        ports:
-            - "${PHPMYADMIN_PORT}:80"
-        volumes:
-            - /sessions
-        networks:
-            - emi_network
+  emi_db_init:
+    image: mariadb:10.6
+    container_name: emi_db_init
+    security_opt:
+      - seccomp:unconfined
+    depends_on:
+      emi_db:
+        condition: service_healthy
+    environment:
+      - DB_HOST=emi_db
+      - DB_USER=root
+      - DB_PASSWORD=Emishops22!
+      - DB_NAME=emishops
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/init-db.sh"]
+    networks:
+      - emi_network
+    restart: "no"
 
-    emi_admin:
-        container_name: emi_admin
-        build: ./infra/admin
-        security_opt:
-            - seccomp:unconfined
-        depends_on:
-            emi_db_init:
-                condition: service_completed_successfully
-        volumes:
-            - "${ADMIN_SRC_FOLDER}:/var/www/app"
-        ports:
-            -  "${ADMIN_PORT}:80"
-        networks:
-            - emi_network
-        restart: always
+  emi_phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: emi_phpmyadmin
+    security_opt:
+      - seccomp:unconfined
+    depends_on:
+      emi_db_init:
+        condition: service_completed_successfully
+    environment:
+      - MYSQL_USERNAME=root
+      - MYSQL_ROOT_PASSWORD=Emishops22!
+      - PMA_HOST=emi_db
+    restart: always
+    ports:
+      - "${PHPMYADMIN_PORT:-8081}:80"
+    volumes:
+      - /sessions
+    networks:
+      - emi_network
+
+  emi_admin:
+    container_name: emi_admin
+    build: ./infra/admin
+    security_opt:
+      - seccomp:unconfined
+    depends_on:
+      emi_db_init:
+        condition: service_completed_successfully
+    volumes:
+      - "${ADMIN_SRC_FOLDER:-./src/web/data}:/var/www/app"
+    ports:
+      - "${ADMIN_PORT:-8080}:80"
+    networks:
+      - emi_network
+    restart: always
+
+  # =============================================================================
+  # POS SYSTEM (system-pos) - PostgreSQL + Redis + Node.js API + Next.js Admin
+  # =============================================================================
+
+  pos_postgres:
+    image: postgres:16-alpine
+    container_name: pos_postgres
+    environment:
+      POSTGRES_USER: ${POS_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${POS_DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${POS_DB_NAME:-pos_system}
+    ports:
+      - "${POS_DB_PORT:-5432}:5432"
+    volumes:
+      - pos_postgres_data:/var/lib/postgresql/data
+    networks:
+      - emi_network
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pos_redis:
+    image: redis:7-alpine
+    container_name: pos_redis
+    ports:
+      - "${POS_REDIS_PORT:-6379}:6379"
+    volumes:
+      - pos_redis_data:/data
+    networks:
+      - emi_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pos_api:
+    container_name: pos_api
+    build:
+      context: ./src/system-pos/apps/api
+      dockerfile: Dockerfile
+    depends_on:
+      pos_postgres:
+        condition: service_healthy
+      pos_redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3001
+      DATABASE_URL: postgresql://${POS_DB_USER:-postgres}:${POS_DB_PASSWORD:-postgres}@pos_postgres:5432/${POS_DB_NAME:-pos_system}?schema=public
+      REDIS_URL: redis://pos_redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+    ports:
+      - "${POS_API_PORT:-3001}:3001"
+    networks:
+      - emi_network
+    restart: always
+
+  pos_admin:
+    container_name: pos_admin
+    build:
+      context: ./src/system-pos/apps/admin
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api}
+        NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-}
+    depends_on:
+      - pos_api
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api}
+      NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-}
+    ports:
+      - "${POS_ADMIN_PORT:-3000}:3000"
+    networks:
+      - emi_network
+    restart: always
 
 networks:
-    emi_network:
-        driver: bridge
+  emi_network:
+    driver: bridge
+
+volumes:
+  pos_postgres_data:
+  pos_redis_data:
