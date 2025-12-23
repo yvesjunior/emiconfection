@@ -1,7 +1,7 @@
 services:
 
     emi_db:
-        image: mariadb
+        image: mariadb:10.6
         container_name: emi_db
         environment:
             - MYSQL_ROOT_PASSWORD=Emishops22!
@@ -21,7 +21,7 @@ services:
             retries: 20
 
     emi_db_init:
-        image: mariadb
+        image: mariadb:10.6
         container_name: emi_db_init
         depends_on:
             emi_db:
@@ -69,8 +69,6 @@ services:
         networks:
             - emi_network
         restart: always
-        security_opt:
-            - seccomp:unconfined
 
 networks:
     emi_network:
