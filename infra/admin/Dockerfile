@@ -1,17 +1,21 @@
-FROM webdevops/php-apache:8.2
+FROM php:8.1-apache
 LABEL org.opencontainers.image.authors="yvesjuniorbationo@gmail.com"
 
-# This image already includes: PHP 8.2, Apache, Composer, and common extensions
-# (mbstring, gd, intl, zip, pdo_mysql, mysqli, xml, opcache, bcmath)
+# Install required PHP extensions
+RUN docker-php-ext-install pdo_mysql mysqli opcache
 
-ENV WEB_DOCUMENT_ROOT=/var/www/app/public
+# Enable Apache mod_rewrite
+RUN a2enmod rewrite
 
-# Copy custom configurations
-COPY ./configs/php.ini /opt/docker/etc/php/php.ini
-COPY entrypoint.sh /sbin/entrypoint.sh
-RUN chmod 755 /sbin/entrypoint.sh
+# Set document root to public folder
+ENV APACHE_DOCUMENT_ROOT /var/www/app/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+RUN sed -ri -e 's!<Directory /var/www/>!<Directory ${APACHE_DOCUMENT_ROOT}>!g' /etc/apache2/apache2.conf
+
+# Allow .htaccess overrides
+RUN sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf
 
 WORKDIR /var/www/app/
-EXPOSE 80 443
+EXPOSE 80
 
-CMD ["/sbin/entrypoint.sh"]
+CMD ["apache2-foreground"]
