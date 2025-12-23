@@ -6,17 +6,17 @@ if [ -d "/var/www/app/public/project" ] && [ ! -d "/var/www/app/public/project/v
     echo "Installing Composer dependencies..."
     cd /var/www/app/public/project
     
-    # Remove old lock file if it causes issues, regenerate fresh
+    # Remove old lock file if it causes issues
     rm -f composer.lock
     
-    # Install with ignore platform reqs for compatibility
-    composer install --no-interaction --no-dev --optimize-autoloader --ignore-platform-reqs || true
+    # Install dependencies
+    composer install --no-interaction --no-dev --optimize-autoloader --ignore-platform-reqs || echo "Composer install failed, continuing..."
     
     # Set permissions
     if [ -d "vendor" ]; then
-        chown -R application:application /var/www/app/public/project/vendor
+        chown -R www-data:www-data /var/www/app/public/project/vendor
     fi
 fi
 
-# Start the webdevops entrypoint (Apache + PHP-FPM via supervisord)
-exec /opt/docker/bin/entrypoint.sh supervisord
+# Start the thecodingmachine entrypoint
+exec /usr/local/bin/apache2-foreground
