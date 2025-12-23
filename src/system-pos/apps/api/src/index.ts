@@ -39,6 +39,29 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// API root - info endpoint
+app.get('/api', (_req, res) => {
+  res.json({
+    name: 'POS System API',
+    version: '1.0.0',
+    status: 'ok',
+    endpoints: [
+      '/api/auth',
+      '/api/employees',
+      '/api/roles',
+      '/api/categories',
+      '/api/products',
+      '/api/warehouses',
+      '/api/inventory',
+      '/api/customers',
+      '/api/shifts',
+      '/api/sales',
+      '/api/settings',
+      '/api/expenses',
+    ],
+  });
+});
+
 // API Routes
 app.use('/api/auth', authRouter);
 app.use('/api/employees', employeesRouter);
