@@ -47,7 +47,8 @@ export default function CustomerManageScreen() {
   const [notes, setNotes] = useState('');
 
   const canAdd = hasPermission('customers:add_quick') || hasPermission('customers:manage');
-  const canManage = hasPermission('customers:manage');
+  const canManage = hasPermission('customers:manage') || hasPermission('customers:add_quick');
+  const canDelete = hasPermission('customers:manage'); // Only full manage permission can delete
 
   // Fetch customer if editing
   const { data: customerData, isLoading } = useQuery({
@@ -223,7 +224,7 @@ export default function CustomerManageScreen() {
         <Text style={styles.headerTitle}>
           {isEditing ? 'Modifier le client' : 'Nouveau client'}
         </Text>
-        {isEditing && canManage && (
+        {isEditing && canDelete && (
           <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
             <Ionicons name="trash-outline" size={24} color={colors.danger} />
           </TouchableOpacity>

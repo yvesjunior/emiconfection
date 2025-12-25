@@ -89,18 +89,46 @@ export async function deleteExpenseCategory(id: string) {
 // EXPENSES
 // ============================================
 
-export async function getExpenses(query: GetExpensesQuery, warehouseId?: string) {
+export async function getExpenses(
+  query: GetExpensesQuery,
+  warehouseId?: string,
+  employeeRole?: string,
+  employeeId?: string
+) {
   const { page, limit, categoryId, startDate, endDate, search } = query;
   const skip = (page - 1) * limit;
 
   const where: any = {};
 
-  // Filter by warehouse (employee's warehouse or query param)
-  if (warehouseId) {
+  // Filter by warehouse according to role
+  if (employeeRole === 'manager' && employeeId) {
+    // Manager sees only expenses from their assigned warehouse
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      include: { warehouse: true },
+    });
+
+    if (employee?.warehouseId) {
+      where.warehouseId = employee.warehouseId;
+    } else {
+      // Manager with no warehouse sees nothing
+      return {
+        data: [],
+        pagination: {
+          page,
+          limit,
+          total: 0,
+          totalPages: 0,
+        },
+      };
+    }
+  } else if (warehouseId) {
+    // Admin or explicit warehouse filter
     where.warehouseId = warehouseId;
   } else if (query.warehouseId) {
     where.warehouseId = query.warehouseId;
   }
+  // Admin without filter sees all
 
   if (categoryId) {
     where.categoryId = categoryId;

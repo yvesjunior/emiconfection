@@ -76,6 +76,8 @@ export default function AppLayout() {
     const newMode = mode === 'sell' ? 'manage' : 'sell';
     await setMode(newMode);
     hapticImpact();
+    // Navigate to the main screen to avoid being stuck on a hidden tab
+    router.replace('/' as any);
   };
 
   if (isLoading || !isAuthenticated) {
@@ -88,6 +90,7 @@ export default function AppLayout() {
 
   return (
     <Tabs
+      key={mode} // Force re-render when mode changes
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: modeColor,
@@ -136,6 +139,16 @@ export default function AppLayout() {
         }}
       />
       <Tabs.Screen
+        name="warehouses-list"
+        options={{
+          title: 'Entrepôts',
+          href: mode === 'sell' ? null : '/(app)/warehouses-list', // Only show in manage mode
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="storefront" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="sales"
         options={{
           title: 'Ventes',
@@ -166,11 +179,31 @@ export default function AppLayout() {
         options={{ href: null }}
       />
       <Tabs.Screen
-        name="products-list"
+        name="categories-manage"
         options={{ href: null }}
       />
       <Tabs.Screen
-        name="categories-manage"
+        name="warehouses-manage"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="staff-management"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="employees-list"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="employees-manage"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="roles-list"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="permissions-list"
         options={{ href: null }}
       />
       <Tabs.Screen
@@ -182,23 +215,11 @@ export default function AppLayout() {
         options={{ href: null }}
       />
       <Tabs.Screen
-        name="expenses"
-        options={{ href: null }}
-      />
-      <Tabs.Screen
-        name="expenses-manage"
-        options={{ href: null }}
-      />
-      <Tabs.Screen
         name="customers"
         options={{ href: null }}
       />
       <Tabs.Screen
         name="customers-manage"
-        options={{ href: null }}
-      />
-      <Tabs.Screen
-        name="reports"
         options={{ href: null }}
       />
       <Tabs.Screen
@@ -211,6 +232,38 @@ export default function AppLayout() {
       />
       <Tabs.Screen
         name="settings-format"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="settings-loyalty"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="transfer-requests-list"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="transfer-request-detail"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="expenses-list"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="expenses-manage"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="reports-financial"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="reports"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="expenses"
         options={{ href: null }}
       />
     </Tabs>

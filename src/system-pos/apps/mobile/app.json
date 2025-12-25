@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "POS Mobile",
-    "slug": "pos-mobile",
+    "name": "emishops",
+    "slug": "emishops-pos",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "pos-mobile",
+    "scheme": "emishops-pos",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1e40af"
+      "backgroundColor": "#f97316"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.pos.mobile",
+      "bundleIdentifier": "com.emishops.pos",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to scan product barcodes"
       }
@@ -23,9 +23,9 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1e40af"
+        "backgroundColor": "#f97316"
       },
-      "package": "com.pos.mobile",
+      "package": "com.emishops.pos",
       "permissions": ["CAMERA"]
     },
     "web": {

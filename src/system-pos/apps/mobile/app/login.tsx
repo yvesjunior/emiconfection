@@ -31,6 +31,8 @@ interface Warehouse {
   name: string;
   code: string;
   address?: string;
+  type?: 'BOUTIQUE' | 'STOCKAGE';
+  isActive?: boolean;
 }
 
 // Safe haptics wrapper for web compatibility
@@ -108,27 +110,73 @@ export default function LoginScreen() {
       // Check if user is admin (can access all warehouses)
       const isAdmin = employee.role.name === 'admin';
       
-      if (isAdmin && !employee.warehouseId) {
-        // Admin without assigned warehouse - show warehouse selector
-        try {
-          const warehouseResponse = await api.get('/warehouses', {
-            headers: { Authorization: `Bearer ${accessToken}` }
-          });
-          const availableWarehouses = warehouseResponse.data.data.filter((w: Warehouse) => w);
-          
-          if (availableWarehouses.length > 1) {
-            // Store pending auth data and show warehouse modal
-            setPendingAuth({ employee, accessToken, refreshToken });
-            setWarehouses(availableWarehouses);
-            setShowWarehouseModal(true);
-            setIsLoading(false);
-            return;
-          } else if (availableWarehouses.length === 1) {
-            // Only one warehouse, auto-select it
-            setSelectedWarehouse(availableWarehouses[0]);
+      // Show warehouse selector based on selected mode
+      // In manage mode: show all warehouses (BOUTIQUE and STOCKAGE)
+      // In sell mode: show only BOUTIQUE warehouses
+      try {
+        const warehouseResponse = await api.get('/warehouses?includeInactive=false', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        
+        // Filter warehouses based on selected mode
+        const allWarehouses = warehouseResponse.data.data.filter((w: Warehouse) => w.isActive);
+        const availableWarehouses = selectedMode === 'manage' 
+          ? allWarehouses // In manage mode, show all warehouses
+          : allWarehouses.filter((w: Warehouse) => w.type === 'BOUTIQUE' || !w.type); // In sell mode, only BOUTIQUE
+        
+        // If employee has assigned warehouse, check if it's compatible with selected mode
+        if (employee.warehouseId) {
+          const assignedWarehouse = allWarehouses.find((w: Warehouse) => w.id === employee.warehouseId);
+          if (assignedWarehouse) {
+            // Check if assigned warehouse is compatible with selected mode
+            if (selectedMode === 'sell' && assignedWarehouse.type === 'STOCKAGE') {
+              // Employee assigned to STOCKAGE but trying to login in sell mode
+              Alert.alert(
+                'Connexion impossible',
+                'Vous êtes assigné à un entrepôt de type Stockage. Pour effectuer des ventes, veuillez sélectionner le mode "Gestion" ou vous connecter à un entrepôt de type Boutique.'
+              );
+              setPin('');
+              setIsLoading(false);
+              return;
+            } else if (availableWarehouses.find((w: Warehouse) => w.id === assignedWarehouse.id)) {
+              // Assigned warehouse is compatible, use it
+              await completeLogin(employee, accessToken, refreshToken, assignedWarehouse);
+              setIsLoading(false);
+              return;
+            }
           }
-        } catch (err) {
-          console.log('Could not fetch warehouses:', err);
+        }
+        
+        if (availableWarehouses.length > 1) {
+          // Store pending auth data and show warehouse modal
+          setPendingAuth({ employee, accessToken, refreshToken });
+          setWarehouses(availableWarehouses);
+          setShowWarehouseModal(true);
+          setIsLoading(false);
+          return;
+        } else if (availableWarehouses.length === 1) {
+          // Only one compatible warehouse, auto-select it
+          await completeLogin(employee, accessToken, refreshToken, availableWarehouses[0]);
+          setIsLoading(false);
+          return;
+        } else {
+          // No compatible warehouses available
+          const modeText = selectedMode === 'manage' ? 'disponibles' : 'de type Boutique';
+          Alert.alert(
+            'Aucun entrepôt disponible',
+            `Aucun entrepôt ${modeText} n'est disponible pour la connexion en mode ${selectedMode === 'manage' ? 'Gestion' : 'Vente'}.`
+          );
+          setPin('');
+          setIsLoading(false);
+          return;
+        }
+      } catch (err) {
+        console.log('Could not fetch warehouses:', err);
+        // Fallback to employee's assigned warehouse if fetch fails
+        if (employee.warehouseId) {
+          await completeLogin(employee, accessToken, refreshToken);
+          setIsLoading(false);
+          return;
         }
       }
 
@@ -396,7 +444,9 @@ export default function LoginScreen() {
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Sélectionner un entrepôt</Text>
             <Text style={styles.modalSubtitle}>
-              Choisissez l'entrepôt dans lequel vous travaillez
+              {selectedMode === 'manage' 
+                ? 'Mode Gestion : Tous les entrepôts sont disponibles'
+                : 'Mode Vente : Seuls les entrepôts Boutique sont disponibles'}
             </Text>
           </View>
 
@@ -417,18 +467,33 @@ export default function LoginScreen() {
                   selectedWarehouseId === item.id && styles.warehouseIconSelected,
                 ]}>
                   <Ionicons
-                    name="business"
+                    name={(item.type === 'BOUTIQUE' || !item.type) ? 'storefront' : 'archive'}
                     size={24}
-                    color={selectedWarehouseId === item.id ? colors.textInverse : colors.primary}
+                    color={selectedWarehouseId === item.id ? colors.textInverse : ((item.type === 'BOUTIQUE' || !item.type) ? colors.primary : colors.success)}
                   />
                 </View>
                 <View style={styles.warehouseInfo}>
-                  <Text style={[
-                    styles.warehouseName,
-                    selectedWarehouseId === item.id && styles.warehouseNameSelected,
-                  ]}>
-                    {item.name}
-                  </Text>
+                  <View style={styles.warehouseTitleRow}>
+                    <Text style={[
+                      styles.warehouseName,
+                      selectedWarehouseId === item.id && styles.warehouseNameSelected,
+                    ]}>
+                      {item.name}
+                    </Text>
+                    {(item.type === 'BOUTIQUE' || item.type === 'STOCKAGE') && (
+                      <View style={[
+                        styles.warehouseTypeBadge,
+                        item.type === 'BOUTIQUE' ? styles.warehouseTypeBadgeBoutique : styles.warehouseTypeBadgeStockage
+                      ]}>
+                        <Text style={[
+                          styles.warehouseTypeBadgeText,
+                          item.type === 'BOUTIQUE' ? styles.warehouseTypeBadgeTextBoutique : styles.warehouseTypeBadgeTextStockage
+                        ]}>
+                          {item.type === 'BOUTIQUE' ? 'Boutique' : 'Stockage'}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                   <Text style={styles.warehouseCode}>Code: {item.code}</Text>
                   {item.address && (
                     <Text style={styles.warehouseAddress} numberOfLines={1}>
@@ -647,6 +712,12 @@ const styles = StyleSheet.create({
   warehouseInfo: {
     flex: 1,
   },
+  warehouseTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
   warehouseName: {
     fontSize: fontSize.lg,
     fontWeight: '600',
@@ -654,6 +725,27 @@ const styles = StyleSheet.create({
   },
   warehouseNameSelected: {
     color: colors.primary,
+  },
+  warehouseTypeBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  warehouseTypeBadgeBoutique: {
+    backgroundColor: colors.primaryLight + '20',
+  },
+  warehouseTypeBadgeStockage: {
+    backgroundColor: colors.successLight + '20',
+  },
+  warehouseTypeBadgeText: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  warehouseTypeBadgeTextBoutique: {
+    color: colors.primary,
+  },
+  warehouseTypeBadgeTextStockage: {
+    color: colors.success,
   },
   warehouseCode: {
     fontSize: fontSize.sm,

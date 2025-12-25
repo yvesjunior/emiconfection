@@ -88,5 +88,57 @@ router.put('/', requirePermission(PERMISSIONS.SETTINGS_MANAGE), async (req: Auth
   res.json({ success: true, message: 'Settings updated successfully' });
 });
 
+// GET /api/settings/loyalty-points - Get loyalty points settings
+router.get('/loyalty-points', async (_req: AuthenticatedRequest, res: Response) => {
+  const [attributionRate, conversionRate] = await Promise.all([
+    prisma.setting.findUnique({ where: { key: 'loyalty_points_attribution_rate' } }),
+    prisma.setting.findUnique({ where: { key: 'loyalty_points_conversion_rate' } }),
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      attributionRate: attributionRate ? Number(attributionRate.value) : 0.01, // Default 1%
+      conversionRate: conversionRate ? Number(conversionRate.value) : 1.0, // Default 1:1
+    },
+  });
+});
+
+// PUT /api/settings/loyalty-points - Update loyalty points settings (Admin only)
+const loyaltyPointsSettingsSchema = z.object({
+  attributionRate: z.number().min(0).max(1).optional(), // 0 to 1 (0% to 100%)
+  conversionRate: z.number().positive().optional(), // Points to FCFA ratio
+});
+
+router.put('/loyalty-points', requirePermission(PERMISSIONS.SETTINGS_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+  const input = loyaltyPointsSettingsSchema.parse(req.body);
+
+  const updates: Promise<any>[] = [];
+
+  if (input.attributionRate !== undefined) {
+    updates.push(
+      prisma.setting.upsert({
+        where: { key: 'loyalty_points_attribution_rate' },
+        update: { value: String(input.attributionRate), type: 'number' },
+        create: { key: 'loyalty_points_attribution_rate', value: String(input.attributionRate), type: 'number' },
+      })
+    );
+  }
+
+  if (input.conversionRate !== undefined) {
+    updates.push(
+      prisma.setting.upsert({
+        where: { key: 'loyalty_points_conversion_rate' },
+        update: { value: String(input.conversionRate), type: 'number' },
+        create: { key: 'loyalty_points_conversion_rate', value: String(input.conversionRate), type: 'number' },
+      })
+    );
+  }
+
+  await Promise.all(updates);
+
+  res.json({ success: true, message: 'Loyalty points settings updated successfully' });
+});
+
 export { router as settingsRouter };
 

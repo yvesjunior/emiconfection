@@ -112,6 +112,8 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
 
   // Get warehouse from input or employee's assigned warehouse
   let warehouseId = input.warehouseId;
+  let warehouse;
+  
   if (!warehouseId) {
     if (employee.warehouseId) {
       warehouseId = employee.warehouseId;
@@ -125,6 +127,19 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
       }
       warehouseId = defaultWarehouse.id;
     }
+  }
+
+  // Verify warehouse exists and is a Boutique
+  warehouse = await prisma.warehouse.findUnique({
+    where: { id: warehouseId },
+  });
+
+  if (!warehouse) {
+    throw ApiError.notFound('Warehouse not found');
+  }
+
+  if (warehouse.type !== 'BOUTIQUE') {
+    throw ApiError.badRequest('Sales can only be made from Boutique warehouses');
   }
 
   // Verify all products exist and get their details
@@ -184,6 +199,47 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
     }
   }
 
+  // Handle loyalty points redemption
+  let loyaltyPointsUsed = input.loyaltyPointsUsed || 0;
+  let loyaltyDiscountAmount = 0;
+  
+  if (loyaltyPointsUsed > 0 && input.customerId) {
+    // Get customer and loyalty settings
+    const customer = await prisma.customer.findUnique({
+      where: { id: input.customerId },
+    });
+
+    if (!customer) {
+      throw ApiError.badRequest('Customer not found');
+    }
+
+    if (customer.loyaltyPoints < loyaltyPointsUsed) {
+      throw ApiError.badRequest(`Insufficient loyalty points. Customer has ${customer.loyaltyPoints} points.`);
+    }
+
+    // Get conversion rate from settings
+    const conversionRateSetting = await prisma.setting.findUnique({
+      where: { key: 'loyalty_points_conversion_rate' },
+    });
+
+    const conversionRate = conversionRateSetting 
+      ? Number(conversionRateSetting.value) 
+      : 1.0; // Default: 1 point = 1 FCFA
+
+    // Calculate discount from points
+    loyaltyDiscountAmount = loyaltyPointsUsed * conversionRate;
+    
+    // Ensure discount doesn't exceed subtotal
+    if (loyaltyDiscountAmount > subtotal) {
+      loyaltyDiscountAmount = subtotal;
+      // Recalculate points used based on actual discount
+      loyaltyPointsUsed = Math.floor(loyaltyDiscountAmount / conversionRate);
+    }
+
+    // Add loyalty discount to total discount
+    discountAmount += loyaltyDiscountAmount;
+  }
+
   // Calculate tax
   const taxRate = input.taxRate ?? Number(process.env.DEFAULT_TAX_RATE || 18);
   const taxableAmount = subtotal - discountAmount;
@@ -212,6 +268,14 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
 
   // Create sale in transaction
   const sale = await prisma.$transaction(async (tx) => {
+    // Deduct loyalty points if used
+    if (loyaltyPointsUsed > 0 && input.customerId) {
+      await tx.customer.update({
+        where: { id: input.customerId },
+        data: { loyaltyPoints: { decrement: loyaltyPointsUsed } },
+      });
+    }
+
     // Create sale
     const newSale = await tx.sale.create({
       data: {
@@ -223,6 +287,7 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
         discountType: input.discountType || null,
         discountValue: input.discountValue || null,
         discountAmount,
+        loyaltyPointsUsed,
         taxRate,
         taxAmount,
         total,
@@ -268,6 +333,28 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
           createdBy: employeeId,
         },
       });
+    }
+
+    // Add loyalty points if customer exists and points were not used
+    if (input.customerId && loyaltyPointsUsed === 0) {
+      // Get attribution rate from settings
+      const attributionRateSetting = await tx.setting.findUnique({
+        where: { key: 'loyalty_points_attribution_rate' },
+      });
+
+      const attributionRate = attributionRateSetting 
+        ? Number(attributionRateSetting.value) 
+        : 0.01; // Default: 1% of total
+
+      // Calculate points to award
+      const pointsToAward = Math.floor(total * attributionRate);
+
+      if (pointsToAward > 0) {
+        await tx.customer.update({
+          where: { id: input.customerId },
+          data: { loyaltyPoints: { increment: pointsToAward } },
+        });
+      }
     }
 
     return newSale;

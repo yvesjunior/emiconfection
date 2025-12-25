@@ -1,28 +1,74 @@
+# ============================================
 # Dependencies
+# ============================================
 node_modules/
 .pnp
 .pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
 
-# Build outputs
+# ============================================
+# Build outputs & Compiled files
+# ============================================
 dist/
 build/
 .next/
 out/
+*.tsbuildinfo
+.turbo/
+*.js.map
+*.d.ts.map
 
-# Environment files
+# ============================================
+# Environment & Secrets
+# ============================================
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+!.env.sample
 *.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
 
-# Logs
+# Secrets & Credentials
+secrets/
+*.pem
+*.key
+*.p12
+*.p8
+*.jks
+*.keystore
+*.mobileprovision
+*.cert
+*.crt
+*.cer
+*.pfx
+credentials.json
+service-account*.json
+firebase-adminsdk*.json
+
+# API Keys & Tokens
+**/api-keys.json
+**/tokens.json
+**/secrets.json
+**/config/secrets.ts
+**/config/secrets.js
+
+# ============================================
+# Logs & Runtime
+# ============================================
 logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
 
 # Runtime data
 pids/
@@ -30,37 +76,128 @@ pids/
 *.seed
 *.pid.lock
 
-# IDE
+# ============================================
+# Testing & Coverage
+# ============================================
+coverage/
+.nyc_output/
+*.lcov
+.jest/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ============================================
+# IDE & Editor files
+# ============================================
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ============================================
+# OS files
+# ============================================
 .DS_Store
+.DS_Store?
+**/.DS_Store
+**/.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
 
-# Testing
-coverage/
-.nyc_output/
-
+# ============================================
 # Prisma
+# ============================================
 apps/api/prisma/*.db
 apps/api/prisma/*.db-journal
+apps/api/prisma/migrations/**/*.sql
+!apps/api/prisma/migrations/**/migration.sql
 
-# Uploads
+# ============================================
+# Uploads & Temporary files
+# ============================================
 uploads/
 temp/
+tmp/
+*.tmp
+.cache/
 
-# Mobile
+# ============================================
+# Mobile (React Native / Expo)
+# ============================================
 apps/mobile/.expo/
 apps/mobile/node_modules/
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-*.orig.*
-web-build/
+apps/mobile/dist/
+apps/mobile/web-build/
+apps/mobile/.expo-shared/
+apps/mobile/.metro-health-check*
 
+# iOS
+apps/mobile/ios/build/
+apps/mobile/ios/Pods/
+apps/mobile/ios/*.xcworkspace
+apps/mobile/ios/*.xcuserdata
+apps/mobile/ios/*.xccheckout
+apps/mobile/ios/*.moved-aside
+apps/mobile/ios/DerivedData/
+apps/mobile/ios/*.hmap
+apps/mobile/ios/*.ipa
+apps/mobile/ios/*.xcuserstate
+apps/mobile/ios/.xcode.env.local
+apps/mobile/ios/*.jsbundle
+apps/mobile/ios/*.orig.*
+
+# Android
+apps/mobile/android/build/
+apps/mobile/android/.gradle/
+apps/mobile/android/local.properties
+apps/mobile/android/*.apk
+apps/mobile/android/*.ap_
+apps/mobile/android/*.aab
+apps/mobile/android/app/release/
+apps/mobile/android/app/debug/
+apps/mobile/android/.idea/
+apps/mobile/android/captures/
+apps/mobile/android/externalNativeBuild/
+apps/mobile/android/outputs/
+
+# ============================================
+# Docker
+# ============================================
+.dockerignore
+docker-compose.override.yml
+*.dockerignore
+
+# ============================================
+# Database dumps & backups
+# ============================================
+*.sql
+*.dump
+*.backup
+*.bak
+!**/migrations/**/*.sql
+
+# ============================================
+# Package manager locks (optional - uncomment if needed)
+# ============================================
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ============================================
 # Misc
-*.tsbuildinfo
-.turbo/
-
+# ============================================
+*.orig.*
+.eslintcache
+.stylelintcache
+.swc/

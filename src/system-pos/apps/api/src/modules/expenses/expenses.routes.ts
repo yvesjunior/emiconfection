@@ -60,7 +60,12 @@ router.delete('/categories/:id', requirePermission(PERMISSIONS.EXPENSES_MANAGE),
 router.get('/', requirePermission(PERMISSIONS.EXPENSES_VIEW), async (req: AuthenticatedRequest, res: Response) => {
   const query = getExpensesQuerySchema.parse(req.query);
   const warehouseId = getWarehouseScope(req) ?? undefined;
-  const result = await expensesService.getExpenses(query, warehouseId);
+  const result = await expensesService.getExpenses(
+    query,
+    warehouseId,
+    req.employee!.roleName,
+    req.employee!.id
+  );
   res.json({ success: true, ...result });
 });
 

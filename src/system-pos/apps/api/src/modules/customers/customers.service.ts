@@ -9,11 +9,21 @@ export async function getCustomers(query: PaginationQuery & { search?: string })
   const where: any = {};
 
   if (query.search) {
-    where.OR = [
-      { name: { contains: query.search, mode: 'insensitive' } },
-      { email: { contains: query.search, mode: 'insensitive' } },
-      { phone: { contains: query.search, mode: 'insensitive' } },
-    ];
+    const searchTerm = query.search.trim();
+    // Check if search is a phone number (only digits)
+    const isPhoneNumber = /^\d+$/.test(searchTerm);
+    
+    if (isPhoneNumber) {
+      // Prioritize phone number search
+      where.phone = { contains: searchTerm, mode: 'insensitive' };
+    } else {
+      // Search in name, email, and phone
+      where.OR = [
+        { name: { contains: searchTerm, mode: 'insensitive' } },
+        { email: { contains: searchTerm, mode: 'insensitive' } },
+        { phone: { contains: searchTerm, mode: 'insensitive' } },
+      ];
+    }
   }
 
   const [customers, total] = await Promise.all([
@@ -21,7 +31,13 @@ export async function getCustomers(query: PaginationQuery & { search?: string })
       where,
       skip,
       take: limit,
-      orderBy: { [sortBy]: sortOrder },
+      orderBy: query.search && /^\d+$/.test(query.search.trim())
+        ? [
+            // If searching by phone, prioritize exact matches
+            { phone: 'asc' },
+            { [sortBy]: sortOrder },
+          ]
+        : { [sortBy]: sortOrder },
       include: {
         _count: { select: { sales: true } },
       },
@@ -136,5 +152,43 @@ export async function addLoyaltyPoints(id: string, points: number) {
   });
 
   return updated;
+}
+
+export async function redeemLoyaltyPoints(id: string, points: number) {
+  const customer = await prisma.customer.findUnique({
+    where: { id },
+  });
+
+  if (!customer) {
+    throw ApiError.notFound('Customer not found');
+  }
+
+  if (customer.loyaltyPoints < points) {
+    throw ApiError.badRequest(`Insufficient loyalty points. Customer has ${customer.loyaltyPoints} points.`);
+  }
+
+  // Get conversion rate from settings
+  const conversionRateSetting = await prisma.setting.findUnique({
+    where: { key: 'loyalty_points_conversion_rate' },
+  });
+
+  const conversionRate = conversionRateSetting 
+    ? Number(conversionRateSetting.value) 
+    : 1.0; // Default: 1 point = 1 FCFA
+
+  // Calculate discount amount
+  const discountAmount = points * conversionRate;
+
+  // Deduct points
+  const updated = await prisma.customer.update({
+    where: { id },
+    data: { loyaltyPoints: { decrement: points } },
+  });
+
+  return {
+    discountAmount,
+    remainingPoints: updated.loyaltyPoints,
+    pointsUsed: points,
+  };
 }
 

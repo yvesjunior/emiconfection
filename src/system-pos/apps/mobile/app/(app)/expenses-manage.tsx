@@ -4,26 +4,23 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  TextInput,
   TouchableOpacity,
+  TextInput,
   Alert,
   ActivityIndicator,
   Platform,
-  KeyboardAvoidingView,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Haptics from 'expo-haptics';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../src/store/auth';
 import api from '../../src/lib/api';
 import { formatCurrency } from '../../src/lib/utils';
 import { colors, spacing, fontSize, borderRadius, shadows } from '../../src/lib/theme';
-
-const hapticNotification = (type: Haptics.NotificationFeedbackType) => {
-  if (Platform.OS !== 'web') Haptics.notificationAsync(type);
-};
 
 interface ExpenseCategory {
   id: string;
@@ -32,346 +29,431 @@ interface ExpenseCategory {
   color: string | null;
 }
 
-const DEFAULT_ICON = 'cash-outline';
-const DEFAULT_COLOR = colors.primary;
+interface Warehouse {
+  id: string;
+  name: string;
+  code: string;
+}
 
-// Default expense categories with icons
-const DEFAULT_CATEGORIES = [
-  { name: 'Loyer', icon: 'home', color: '#6366F1' },
-  { name: 'Électricité', icon: 'flash', color: '#F59E0B' },
-  { name: 'Eau', icon: 'water', color: '#3B82F6' },
-  { name: 'Internet', icon: 'wifi', color: '#10B981' },
-  { name: 'Salaires', icon: 'people', color: '#8B5CF6' },
-  { name: 'Transport', icon: 'car', color: '#EF4444' },
-  { name: 'Fournitures', icon: 'cube', color: '#F97316' },
-  { name: 'Maintenance', icon: 'construct', color: '#6B7280' },
-  { name: 'Marketing', icon: 'megaphone', color: '#EC4899' },
-  { name: 'Autre', icon: 'ellipsis-horizontal', color: '#64748B' },
-];
+const hapticNotification = (type: Haptics.NotificationFeedbackType) => {
+  if (Platform.OS !== 'web') Haptics.notificationAsync(type);
+};
 
-export default function ExpenseManageScreen() {
+export default function ExpensesManageScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const expenseId = params.expenseId as string | undefined;
   const queryClient = useQueryClient();
-  const { id } = useLocalSearchParams<{ id?: string }>();
-  const isEditing = !!id;
+  const employee = useAuthStore((state) => state.employee);
   const hasPermission = useAuthStore((state) => state.hasPermission);
 
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const isEditing = !!expenseId;
+  const canManage = hasPermission('expenses:manage');
+  const canCreate = hasPermission('expenses:create');
+
+  // Form state
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [reference, setReference] = useState('');
-
-  const canCreate = hasPermission('expenses:create');
-  const canManage = hasPermission('expenses:manage');
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [warehouseId, setWarehouseId] = useState<string | null>(null);
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [showWarehousePicker, setShowWarehousePicker] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Fetch expense categories
-  const { data: categoriesData, isLoading: isLoadingCategories } = useQuery({
+  const { data: categoriesData } = useQuery({
     queryKey: ['expense-categories'],
     queryFn: async () => {
       const res = await api.get('/expenses/categories');
-      return res.data.data;
+      return res.data.data as ExpenseCategory[];
     },
   });
 
-  // Fetch existing expense if editing
-  const { data: expenseData, isLoading: isLoadingExpense } = useQuery({
-    queryKey: ['expense', id],
+  const categories = categoriesData || [];
+
+  // Fetch warehouses
+  const { data: warehousesData } = useQuery({
+    queryKey: ['warehouses', 'expenses'],
     queryFn: async () => {
-      const res = await api.get(`/expenses/${id}`);
-      return res.data.data;
+      const res = await api.get('/warehouses?includeInactive=false');
+      return res.data.data as Warehouse[];
     },
-    enabled: isEditing,
   });
 
-  // Populate form when editing
+  const warehouses = warehousesData || [];
+
+  // Filter warehouses based on role
+  const availableWarehouses = warehouses.filter((w) => {
+    if (employee?.role?.name === 'admin') return true;
+    if (employee?.role?.name === 'manager') {
+      return employee?.warehouseId === w.id;
+    }
+    return employee?.warehouseId === w.id;
+  });
+
+  // Set default warehouse for non-admin
+  useEffect(() => {
+    if (!warehouseId && employee?.warehouseId && !isEditing) {
+      setWarehouseId(employee.warehouseId);
+    }
+  }, [employee?.warehouseId, warehouseId, isEditing]);
+
+  // Fetch expense if editing
+  const { data: expenseData, isLoading } = useQuery({
+    queryKey: ['expense', expenseId],
+    queryFn: async () => {
+      const res = await api.get(`/expenses/${expenseId}`);
+      return res.data.data;
+    },
+    enabled: isEditing && !!expenseId,
+  });
+
   useEffect(() => {
     if (expenseData) {
-      setSelectedCategory(expenseData.categoryId);
-      setAmount(String(expenseData.amount));
+      setAmount(expenseData.amount.toString());
       setDescription(expenseData.description || '');
       setReference(expenseData.reference || '');
+      setCategoryId(expenseData.categoryId);
+      setWarehouseId(expenseData.warehouseId);
+      setDate(expenseData.date.split('T')[0]);
     }
   }, [expenseData]);
 
-  const categories: ExpenseCategory[] = categoriesData || [];
-
-  // Create mutation
-  const createMutation = useMutation({
+  const saveMutation = useMutation({
     mutationFn: async (data: any) => {
-      const res = await api.post('/expenses', data);
-      return res.data;
+      if (isEditing) {
+        const res = await api.put(`/expenses/${expenseId}`, data);
+        return res.data.data;
+      } else {
+        const res = await api.post('/expenses', data);
+        return res.data.data;
+      }
     },
     onSuccess: () => {
-      hapticNotification(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expenses-summary'] });
-      Alert.alert('Succès', 'Dépense enregistrée', [
+      hapticNotification(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Succès', `Dépense ${isEditing ? 'modifiée' : 'créée'} avec succès`, [
         { text: 'OK', onPress: () => router.back() },
       ]);
     },
     onError: (error: any) => {
       hapticNotification(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', error.response?.data?.message || 'Échec de l\'enregistrement');
+      Alert.alert('Erreur', error.response?.data?.message || 'Une erreur est survenue');
     },
   });
 
-  // Update mutation
-  const updateMutation = useMutation({
-    mutationFn: async (data: any) => {
-      const res = await api.put(`/expenses/${id}`, data);
-      return res.data;
-    },
-    onSuccess: () => {
-      hapticNotification(Haptics.NotificationFeedbackType.Success);
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expense', id] });
-      queryClient.invalidateQueries({ queryKey: ['expenses-summary'] });
-      Alert.alert('Succès', 'Dépense mise à jour', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
-    },
-    onError: (error: any) => {
-      hapticNotification(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', error.response?.data?.message || 'Échec de la mise à jour');
-    },
-  });
+  const handleSave = () => {
+    if (!amount || Number(amount) <= 0) {
+      Alert.alert('Erreur', 'Veuillez saisir un montant valide');
+      return;
+    }
 
-  // Delete mutation
-  const deleteMutation = useMutation({
-    mutationFn: async () => {
-      const res = await api.delete(`/expenses/${id}`);
-      return res.data;
-    },
-    onSuccess: () => {
-      hapticNotification(Haptics.NotificationFeedbackType.Success);
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expenses-summary'] });
-      router.back();
-    },
-    onError: (error: any) => {
-      hapticNotification(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', error.response?.data?.message || 'Échec de la suppression');
-    },
-  });
-
-  const handleSubmit = () => {
-    if (!selectedCategory) {
+    if (!categoryId) {
       Alert.alert('Erreur', 'Veuillez sélectionner une catégorie');
       return;
     }
 
-    const parsedAmount = parseFloat(amount);
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      Alert.alert('Erreur', 'Veuillez entrer un montant valide');
+    if (!warehouseId) {
+      Alert.alert('Erreur', 'Veuillez sélectionner un entrepôt');
       return;
     }
 
-    const data = {
-      categoryId: selectedCategory,
-      amount: parsedAmount,
-      description: description.trim() || null,
-      reference: reference.trim() || null,
-    };
-
-    if (isEditing) {
-      updateMutation.mutate(data);
-    } else {
-      createMutation.mutate(data);
-    }
-  };
-
-  const handleDelete = () => {
-    Alert.alert(
-      'Supprimer la dépense',
-      'Êtes-vous sûr de vouloir supprimer cette dépense ?',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: () => deleteMutation.mutate(),
+    setIsSaving(true);
+    saveMutation.mutate(
+      {
+        categoryId,
+        warehouseId,
+        amount: Number(amount),
+        description: description || null,
+        reference: reference || null,
+        date: new Date(date).toISOString(),
+      },
+      {
+        onSettled: () => {
+          setIsSaving(false);
         },
-      ]
+      }
     );
   };
-
-  const isLoading = isLoadingCategories || isLoadingExpense;
-  const isSubmitting = createMutation.isPending || updateMutation.isPending;
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Chargement...</Text>
-      </SafeAreaView>
-    );
-  }
-
-  if (!isEditing && !canCreate) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>
-          Vous n'avez pas la permission d'ajouter des dépenses.
-        </Text>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.loading}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
       </SafeAreaView>
     );
   }
 
   if (isEditing && !canManage) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>
-          Vous n'avez pas la permission de modifier cette dépense.
-        </Text>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Modifier la dépense</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <View style={styles.accessDenied}>
+          <Ionicons name="lock-closed" size={64} color={colors.textMuted} />
+          <Text style={styles.accessDeniedTitle}>Accès refusé</Text>
+          <Text style={styles.accessDeniedText}>
+            Vous n'avez pas la permission de modifier les dépenses
+          </Text>
+        </View>
       </SafeAreaView>
     );
   }
 
+  if (!isEditing && !canCreate) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Nouvelle dépense</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <View style={styles.accessDenied}>
+          <Ionicons name="lock-closed" size={64} color={colors.textMuted} />
+          <Text style={styles.accessDeniedTitle}>Accès refusé</Text>
+          <Text style={styles.accessDeniedText}>
+            Vous n'avez pas la permission de créer des dépenses
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const selectedCategory = categories.find((c) => c.id === categoryId);
+  const selectedWarehouse = warehouses.find((w) => w.id === warehouseId);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
           {isEditing ? 'Modifier la dépense' : 'Nouvelle dépense'}
         </Text>
-        {isEditing && canManage && (
-          <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
-            <Ionicons name="trash-outline" size={24} color={colors.danger} />
-          </TouchableOpacity>
-        )}
-        {!isEditing && <View style={{ width: 44 }} />}
+        <View style={{ width: 24 }} />
       </View>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <ScrollView style={styles.content}>
-          {/* Amount Input */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Montant</Text>
-            <View style={styles.amountContainer}>
-              <TextInput
-                style={styles.amountInput}
-                value={amount}
-                onChangeText={setAmount}
-                placeholder="0"
-                placeholderTextColor={colors.textMuted}
-                keyboardType="numeric"
-                selectTextOnFocus
-              />
-              <Text style={styles.amountCurrency}>FCFA</Text>
-            </View>
-          </View>
-
-          {/* Category Selection */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Catégorie</Text>
-            <View style={styles.categoriesGrid}>
-              {categories.length > 0 ? (
-                categories.map((category) => {
-                  const isSelected = selectedCategory === category.id;
-                  const iconName = category.icon || DEFAULT_ICON;
-                  const iconColor = category.color || DEFAULT_COLOR;
-
-                  return (
-                    <TouchableOpacity
-                      key={category.id}
-                      style={[
-                        styles.categoryButton,
-                        isSelected && { borderColor: iconColor, backgroundColor: iconColor + '15' },
-                      ]}
-                      onPress={() => setSelectedCategory(category.id)}
-                    >
-                      <View style={[styles.categoryIcon, { backgroundColor: iconColor + '20' }]}>
-                        <Ionicons name={iconName as any} size={24} color={iconColor} />
-                      </View>
-                      <Text
-                        style={[
-                          styles.categoryButtonText,
-                          isSelected && { color: iconColor, fontWeight: '600' },
-                        ]}
-                      >
-                        {category.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })
-              ) : (
-                // Show default categories if none exist
-                DEFAULT_CATEGORIES.slice(0, 6).map((category, index) => (
-                  <View key={index} style={styles.categoryButton}>
-                    <View style={[styles.categoryIcon, { backgroundColor: category.color + '20' }]}>
-                      <Ionicons name={category.icon as any} size={24} color={category.color} />
-                    </View>
-                    <Text style={styles.categoryButtonText}>{category.name}</Text>
-                  </View>
-                ))
-              )}
-            </View>
-            {categories.length === 0 && (
-              <Text style={styles.noCategoriesText}>
-                Aucune catégorie disponible. Contactez l'administrateur.
-              </Text>
-            )}
-          </View>
-
-          {/* Description */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Description (optionnel)</Text>
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {/* Amount */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Montant *</Text>
+          <View style={styles.amountInputContainer}>
             <TextInput
-              style={[styles.input, styles.textArea]}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Description de la dépense..."
+              style={styles.amountInput}
+              value={amount}
+              onChangeText={setAmount}
+              placeholder="0"
               placeholderTextColor={colors.textMuted}
-              multiline
-              numberOfLines={3}
+              keyboardType="numeric"
+              selectTextOnFocus
             />
+            <Text style={styles.currency}>FCFA</Text>
           </View>
+          {amount && !isNaN(parseFloat(amount)) && (
+            <Text style={styles.helperText}>
+              {formatCurrency(parseFloat(amount))}
+            </Text>
+          )}
+        </View>
 
-          {/* Reference */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Référence (optionnel)</Text>
-            <TextInput
-              style={styles.input}
-              value={reference}
-              onChangeText={setReference}
-              placeholder="N° de facture ou reçu"
-              placeholderTextColor={colors.textMuted}
-            />
-          </View>
-
-          {/* Submit Button */}
-          <View style={styles.submitContainer}>
-            <TouchableOpacity
-              style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
-              onPress={handleSubmit}
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? (
-                <ActivityIndicator color={colors.textInverse} />
-              ) : (
-                <>
+        {/* Category */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Catégorie *</Text>
+          <TouchableOpacity
+            style={styles.pickerButton}
+            onPress={() => setShowCategoryPicker(true)}
+          >
+            {selectedCategory ? (
+              <View style={styles.pickerSelected}>
+                {selectedCategory.icon && (
                   <Ionicons
-                    name={isEditing ? 'checkmark-circle' : 'add-circle'}
-                    size={24}
-                    color={colors.textInverse}
+                    name={selectedCategory.icon as any}
+                    size={20}
+                    color={selectedCategory.color || colors.primary}
                   />
-                  <Text style={styles.submitButtonText}>
-                    {isEditing ? 'Mettre à jour' : 'Enregistrer la dépense'}
-                  </Text>
-                </>
-              )}
+                )}
+                <Text style={styles.pickerSelectedText}>{selectedCategory.name}</Text>
+              </View>
+            ) : (
+              <Text style={styles.pickerPlaceholder}>Sélectionner une catégorie</Text>
+            )}
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Warehouse */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Entrepôt *</Text>
+          <TouchableOpacity
+            style={styles.pickerButton}
+            onPress={() => setShowWarehousePicker(true)}
+            disabled={availableWarehouses.length === 1}
+          >
+            {selectedWarehouse ? (
+              <View style={styles.pickerSelected}>
+                <Ionicons name="storefront-outline" size={20} color={colors.primary} />
+                <Text style={styles.pickerSelectedText}>
+                  {selectedWarehouse.name} ({selectedWarehouse.code})
+                </Text>
+              </View>
+            ) : (
+              <Text style={styles.pickerPlaceholder}>Sélectionner un entrepôt</Text>
+            )}
+            {availableWarehouses.length > 1 && (
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Date */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Date *</Text>
+          <TextInput
+            style={styles.input}
+            value={date}
+            onChangeText={setDate}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={colors.textMuted}
+          />
+        </View>
+
+        {/* Description */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Description</Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            value={description}
+            onChangeText={setDescription}
+            placeholder="Description de la dépense..."
+            placeholderTextColor={colors.textMuted}
+            multiline
+            numberOfLines={3}
+          />
+        </View>
+
+        {/* Reference */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Référence</Text>
+          <TextInput
+            style={styles.input}
+            value={reference}
+            onChangeText={setReference}
+            placeholder="Numéro de reçu, facture..."
+            placeholderTextColor={colors.textMuted}
+          />
+        </View>
+
+        {/* Save Button */}
+        <TouchableOpacity
+          style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
+          onPress={handleSave}
+          disabled={isSaving}
+        >
+          {isSaving ? (
+            <ActivityIndicator color={colors.textInverse} />
+          ) : (
+            <>
+              <Ionicons name="save-outline" size={20} color={colors.textInverse} />
+              <Text style={styles.saveButtonText}>
+                {isEditing ? 'Enregistrer' : 'Créer'}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </ScrollView>
+
+      {/* Category Picker Modal */}
+      <Modal
+        visible={showCategoryPicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowCategoryPicker(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Sélectionner une catégorie</Text>
+            <TouchableOpacity onPress={() => setShowCategoryPicker(false)}>
+              <Ionicons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
+          <FlatList
+            data={categories}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.categoryOption}
+                onPress={() => {
+                  setCategoryId(item.id);
+                  setShowCategoryPicker(false);
+                }}
+              >
+                {item.icon && (
+                  <Ionicons
+                    name={item.icon as any}
+                    size={24}
+                    color={item.color || colors.primary}
+                  />
+                )}
+                <Text style={styles.categoryOptionText}>{item.name}</Text>
+                {categoryId === item.id && (
+                  <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            )}
+          />
+        </SafeAreaView>
+      </Modal>
 
-          <View style={{ height: spacing.xxl }} />
-        </ScrollView>
-      </KeyboardAvoidingView>
+      {/* Warehouse Picker Modal */}
+      <Modal
+        visible={showWarehousePicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowWarehousePicker(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Sélectionner un entrepôt</Text>
+            <TouchableOpacity onPress={() => setShowWarehousePicker(false)}>
+              <Ionicons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+          <FlatList
+            data={availableWarehouses}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.warehouseOption}
+                onPress={() => {
+                  setWarehouseId(item.id);
+                  setShowWarehousePicker(false);
+                }}
+              >
+                <Ionicons name="storefront-outline" size={24} color={colors.primary} />
+                <View style={styles.warehouseOptionInfo}>
+                  <Text style={styles.warehouseOptionName}>{item.name}</Text>
+                  <Text style={styles.warehouseOptionCode}>{item.code}</Text>
+                </View>
+                {warehouseId === item.id && (
+                  <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            )}
+          />
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -381,43 +463,23 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-  },
-  loadingText: {
-    marginTop: spacing.md,
-    fontSize: fontSize.md,
-    color: colors.textMuted,
-    textAlign: 'center',
-    paddingHorizontal: spacing.lg,
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
-  },
-  backButton: {
-    width: 44,
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   headerTitle: {
     fontSize: fontSize.lg,
     fontWeight: '600',
     color: colors.text,
   },
-  deleteButton: {
-    width: 44,
-    height: 44,
+  loading: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -425,77 +487,76 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   section: {
-    backgroundColor: colors.surface,
     padding: spacing.lg,
+    backgroundColor: colors.surface,
     marginTop: spacing.md,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: colors.border,
   },
-  sectionTitle: {
+  label: {
     fontSize: fontSize.md,
     fontWeight: '600',
     color: colors.text,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
-  amountContainer: {
+  amountInputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.surfaceSecondary,
-    borderRadius: borderRadius.lg,
     borderWidth: 2,
-    borderColor: colors.danger,
+    borderColor: colors.primary,
+    borderRadius: borderRadius.lg,
   },
   amountInput: {
     flex: 1,
-    fontSize: 36,
+    fontSize: fontSize.xxl,
     fontWeight: '700',
-    color: colors.danger,
+    color: colors.text,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     textAlign: 'right',
   },
-  amountCurrency: {
+  currency: {
     fontSize: fontSize.lg,
     fontWeight: '600',
     color: colors.textMuted,
     paddingRight: spacing.md,
   },
-  categoriesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  categoryButton: {
-    width: '31%',
-    alignItems: 'center',
-    padding: spacing.md,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: borderRadius.lg,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  categoryIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-  },
-  categoryButtonText: {
-    fontSize: fontSize.sm,
-    color: colors.textSecondary,
-    textAlign: 'center',
-  },
-  noCategoriesText: {
-    marginTop: spacing.md,
+  helperText: {
     fontSize: fontSize.sm,
     color: colors.textMuted,
-    textAlign: 'center',
+    marginTop: spacing.xs,
+  },
+  pickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  pickerSelected: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+  },
+  pickerSelectedText: {
+    fontSize: fontSize.md,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  pickerPlaceholder: {
+    fontSize: fontSize.md,
+    color: colors.textMuted,
   },
   input: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    padding: spacing.md,
     fontSize: fontSize.md,
     color: colors.text,
     borderWidth: 1,
@@ -505,26 +566,97 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
   },
-  submitContainer: {
-    padding: spacing.lg,
-  },
-  submitButton: {
+  saveButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
-    backgroundColor: colors.danger,
+    margin: spacing.lg,
     paddingVertical: spacing.md,
+    backgroundColor: colors.primary,
     borderRadius: borderRadius.lg,
     ...shadows.md,
   },
-  submitButtonDisabled: {
+  saveButtonDisabled: {
     opacity: 0.7,
   },
-  submitButtonText: {
-    fontSize: fontSize.lg,
+  saveButtonText: {
+    fontSize: fontSize.md,
     fontWeight: '700',
     color: colors.textInverse,
   },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: {
+    fontSize: fontSize.lg,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  categoryOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.md,
+  },
+  categoryOptionText: {
+    flex: 1,
+    fontSize: fontSize.md,
+    color: colors.text,
+  },
+  warehouseOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.md,
+  },
+  warehouseOptionInfo: {
+    flex: 1,
+  },
+  warehouseOptionName: {
+    fontSize: fontSize.md,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  warehouseOptionCode: {
+    fontSize: fontSize.sm,
+    color: colors.textMuted,
+    marginTop: spacing.xs / 2,
+  },
+  accessDenied: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  accessDeniedTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: '600',
+    color: colors.text,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  accessDeniedText: {
+    fontSize: fontSize.md,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: fontSize.md * 1.5,
+  },
 });
-

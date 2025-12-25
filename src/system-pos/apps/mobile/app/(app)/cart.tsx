@@ -30,6 +30,7 @@ interface Customer {
   name: string;
   phone: string | null;
   email: string | null;
+  loyaltyPoints?: number;
 }
 
 const hapticImpact = (style: Haptics.ImpactFeedbackStyle) => {
@@ -56,6 +57,8 @@ export default function CartScreen() {
   const [showDiscountModal, setShowDiscountModal] = useState(false);
   const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage');
   const [discountValue, setDiscountValue] = useState('');
+  const [loyaltyPointsUsed, setLoyaltyPointsUsed] = useState(0);
+  const [showLoyaltyPointsModal, setShowLoyaltyPointsModal] = useState(false);
   
   // Split payment state
   const [splitPaymentEnabled, setSplitPaymentEnabled] = useState(false);
@@ -94,6 +97,35 @@ export default function CartScreen() {
 
   const customers: Customer[] = customersData || [];
 
+  // Check if search looks like a phone number (only digits)
+  const isPhoneSearch = /^\d+$/.test(customerSearch.trim());
+  const hasNoResults = customerSearch.length > 0 && customers.length === 0;
+
+  // Fetch loyalty points settings
+  const { data: loyaltySettings } = useQuery({
+    queryKey: ['loyalty-settings'],
+    queryFn: async () => {
+      const res = await api.get('/settings/loyalty-points');
+      return res.data.data;
+    },
+  });
+
+  const conversionRate = loyaltySettings?.conversionRate || 1.0; // Default 1:1
+  const attributionRate = loyaltySettings?.attributionRate || 0.01; // Default 1%
+
+  // Fetch customer details when selected
+  const { data: customerDetails } = useQuery({
+    queryKey: ['customer', selectedCustomer?.id],
+    queryFn: async () => {
+      if (!selectedCustomer?.id) return null;
+      const res = await api.get(`/customers/${selectedCustomer.id}`);
+      return res.data.data;
+    },
+    enabled: !!selectedCustomer?.id,
+  });
+
+  const customerLoyaltyPoints = customerDetails?.loyaltyPoints || 0;
+
   // Load parked carts on mount
   useEffect(() => {
     loadParkedCarts();
@@ -126,6 +158,7 @@ export default function CartScreen() {
             clearCart();
             setSelectedCustomer(null);
             setDiscountValue('');
+            setLoyaltyPointsUsed(0);
             hapticNotification(Haptics.NotificationFeedbackType.Success);
             Alert.alert('Succès', 'Panier mis en attente');
           },
@@ -208,10 +241,27 @@ export default function CartScreen() {
       setShowCustomerModal(false);
       setNewCustomerName('');
       setNewCustomerPhone('');
+      setCustomerSearch(''); // Clear search
       refetchCustomers();
       hapticNotification(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
       Alert.alert('Erreur', error.response?.data?.message || 'Impossible de créer le client');
+    }
+  };
+
+  // Quick create from phone search
+  const handleQuickCreateFromPhone = () => {
+    setNewCustomerPhone(customerSearch.trim());
+    setNewCustomerName('');
+    setShowAddCustomer(true);
+  };
+
+  // Handle closing add customer form - return to search if there was a search
+  const handleCloseAddCustomer = () => {
+    setShowAddCustomer(false);
+    // Keep the search if it was a phone search, clear it otherwise
+    if (!isPhoneSearch) {
+      setCustomerSearch('');
     }
   };
 
@@ -250,8 +300,45 @@ export default function CartScreen() {
 
   const subtotal = getSubtotal();
   const discount = getDiscountAmount();
+  const loyaltyDiscount = loyaltyPointsUsed > 0 ? loyaltyPointsUsed * conversionRate : 0;
   const tax = getTaxAmount(TAX_RATE);
-  const total = getTotal(TAX_RATE);
+  const total = getTotal(TAX_RATE) - loyaltyDiscount;
+
+  // Show loyalty points alert when customer with points is selected
+  useEffect(() => {
+    if (selectedCustomer && customerLoyaltyPoints > 0 && items.length > 0) {
+      const maxDiscount = customerLoyaltyPoints * conversionRate;
+      const maxDiscountMessage = maxDiscount > subtotal 
+        ? `Remise maximale possible: ${formatCurrency(subtotal)}`
+        : `Remise maximale possible: ${formatCurrency(maxDiscount)} (${customerLoyaltyPoints} points)`;
+
+      Alert.alert(
+        'Points de fidélité disponibles',
+        `Le client a ${customerLoyaltyPoints} points disponibles.\n${maxDiscountMessage}\n\nQue souhaitez-vous faire ?`,
+        [
+          {
+            text: 'Accumuler les points',
+            onPress: () => {
+              setLoyaltyPointsUsed(0);
+            },
+          },
+          {
+            text: 'Utiliser les points',
+            onPress: () => {
+              setShowLoyaltyPointsModal(true);
+            },
+          },
+          {
+            text: 'Annuler',
+            style: 'cancel',
+            onPress: () => {
+              setLoyaltyPointsUsed(0);
+            },
+          },
+        ]
+      );
+    }
+  }, [selectedCustomer, customerLoyaltyPoints, items.length, subtotal, conversionRate]);
 
   const cashReceivedAmount = parseFloat(cashReceived) || 0;
   const changeAmount = cashReceivedAmount - total;
@@ -368,6 +455,7 @@ export default function CartScreen() {
         })),
         payments: paymentsData,
         customerId: selectedCustomer?.id || null,
+        loyaltyPointsUsed: loyaltyPointsUsed || 0,
         taxRate: TAX_RATE,
       };
 
@@ -631,13 +719,23 @@ export default function CartScreen() {
               {selectedCustomer ? 'Client' : 'Ajouter un client'}
             </Text>
             {selectedCustomer && (
-              <Text style={styles.customerSelectorName}>{selectedCustomer.name}</Text>
+              <>
+                <Text style={styles.customerSelectorName}>{selectedCustomer.name}</Text>
+                {customerLoyaltyPoints > 0 && (
+                  <Text style={styles.loyaltyPointsText}>
+                    {customerLoyaltyPoints} points disponibles
+                  </Text>
+                )}
+              </>
             )}
           </View>
           {selectedCustomer ? (
             <TouchableOpacity
               style={styles.customerClearButton}
-              onPress={() => setSelectedCustomer(null)}
+              onPress={() => {
+                setSelectedCustomer(null);
+                setLoyaltyPointsUsed(0);
+              }}
             >
               <Ionicons name="close-circle" size={20} color={colors.textMuted} />
             </TouchableOpacity>
@@ -645,6 +743,22 @@ export default function CartScreen() {
             <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
           )}
         </TouchableOpacity>
+      )}
+
+      {/* Loyalty Points Discount Display */}
+      {loyaltyPointsUsed > 0 && (
+        <View style={styles.loyaltyDiscountBadge}>
+          <Ionicons name="star" size={16} color={colors.success} />
+          <Text style={styles.loyaltyDiscountText}>
+            Remise points: {formatCurrency(loyaltyPointsUsed * conversionRate)} ({loyaltyPointsUsed} pts)
+          </Text>
+          <TouchableOpacity
+            onPress={() => setLoyaltyPointsUsed(0)}
+            style={styles.loyaltyDiscountRemove}
+          >
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Discount Button */}
@@ -881,6 +995,17 @@ export default function CartScreen() {
                 </Text>
               </View>
             )}
+            {loyaltyDiscount > 0 && (
+              <View style={styles.summaryRow}>
+                <View style={styles.summaryLabelRow}>
+                  <Ionicons name="star" size={16} color={colors.success} />
+                  <Text style={styles.summaryLabel}>Remise points ({loyaltyPointsUsed} pts)</Text>
+                </View>
+                <Text style={[styles.summaryValue, { color: colors.success }]}>
+                  -{formatCurrency(loyaltyDiscount)}
+                </Text>
+              </View>
+            )}
             <View style={[styles.summaryRow, styles.summaryTotal]}>
               <Text style={styles.totalLabel}>Total</Text>
               <Text style={styles.totalValue}>{formatCurrency(total)}</Text>
@@ -960,7 +1085,7 @@ export default function CartScreen() {
               <View style={styles.formButtons}>
                 <TouchableOpacity
                   style={styles.formButtonSecondary}
-                  onPress={() => setShowAddCustomer(false)}
+                  onPress={handleCloseAddCustomer}
                 >
                   <Text style={styles.formButtonSecondaryText}>Annuler</Text>
                 </TouchableOpacity>
@@ -976,29 +1101,57 @@ export default function CartScreen() {
             <>
               {/* Search Input */}
               <View style={styles.customerSearchContainer}>
-                <Ionicons name="search" size={20} color={colors.textMuted} />
+                <Ionicons name={isPhoneSearch ? "call" : "search"} size={20} color={colors.textMuted} />
                 <TextInput
                   style={styles.customerSearchInput}
                   value={customerSearch}
                   onChangeText={setCustomerSearch}
-                  placeholder="Rechercher un client..."
+                  placeholder={isPhoneSearch ? "Rechercher par numéro..." : "Rechercher un client..."}
                   placeholderTextColor={colors.textMuted}
+                  keyboardType={isPhoneSearch ? "phone-pad" : "default"}
                 />
                 {customerSearch.length > 0 && (
-                  <TouchableOpacity onPress={() => setCustomerSearch('')}>
+                  <TouchableOpacity onPress={() => {
+                    setCustomerSearch('');
+                    setShowAddCustomer(false);
+                  }}>
                     <Ionicons name="close-circle" size={20} color={colors.textMuted} />
                   </TouchableOpacity>
                 )}
               </View>
 
-              {/* Quick Add Button */}
-              <TouchableOpacity
-                style={styles.quickAddButton}
-                onPress={() => setShowAddCustomer(true)}
-              >
-                <Ionicons name="add-circle" size={24} color={colors.primary} />
-                <Text style={styles.quickAddText}>Créer un nouveau client</Text>
-              </TouchableOpacity>
+              {/* Quick Create from Phone Search */}
+              {isPhoneSearch && hasNoResults && (
+                <TouchableOpacity
+                  style={styles.quickCreateFromPhoneButton}
+                  onPress={handleQuickCreateFromPhone}
+                >
+                  <Ionicons name="add-circle" size={24} color={colors.primary} />
+                  <View style={styles.quickCreateFromPhoneTextContainer}>
+                    <Text style={styles.quickCreateFromPhoneText}>
+                      Créer un client avec ce numéro
+                    </Text>
+                    <Text style={styles.quickCreateFromPhoneNumber}>
+                      {customerSearch}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              {/* Quick Add Button (when not searching by phone) */}
+              {(!isPhoneSearch || !hasNoResults) && (
+                <TouchableOpacity
+                  style={styles.quickAddButton}
+                  onPress={() => {
+                    setNewCustomerPhone('');
+                    setNewCustomerName('');
+                    setShowAddCustomer(true);
+                  }}
+                >
+                  <Ionicons name="add-circle" size={24} color={colors.primary} />
+                  <Text style={styles.quickAddText}>Créer un nouveau client</Text>
+                </TouchableOpacity>
+              )}
 
               {/* Customer List */}
               <FlatList
@@ -1017,20 +1170,31 @@ export default function CartScreen() {
                       <Ionicons name="person" size={20} color={colors.primary} />
                     </View>
                     <View style={styles.customerItemInfo}>
-                      <Text style={styles.customerItemName}>{item.name}</Text>
+                      <Text style={styles.customerItemName}>{item.name || 'Sans nom'}</Text>
                       {item.phone && (
-                        <Text style={styles.customerItemPhone}>{item.phone}</Text>
+                        <View style={styles.customerItemPhoneRow}>
+                          <Ionicons name="call-outline" size={12} color={colors.textMuted} />
+                          <Text style={styles.customerItemPhone}>{item.phone}</Text>
+                        </View>
                       )}
                     </View>
                     <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                   </TouchableOpacity>
                 )}
                 ListEmptyComponent={
-                  <View style={styles.emptyCustomers}>
-                    <Text style={styles.emptyCustomersText}>
-                      {customerSearch ? 'Aucun client trouvé' : 'Aucun client'}
-                    </Text>
-                  </View>
+                  !isPhoneSearch || !hasNoResults ? (
+                    <View style={styles.emptyCustomers}>
+                      <Ionicons name="people-outline" size={48} color={colors.textMuted} />
+                      <Text style={styles.emptyCustomersText}>
+                        {customerSearch ? 'Aucun client trouvé' : 'Aucun client'}
+                      </Text>
+                      {customerSearch && !isPhoneSearch && (
+                        <Text style={styles.emptyCustomersHint}>
+                          Essayez de rechercher par numéro de téléphone
+                        </Text>
+                      )}
+                    </View>
+                  ) : null
                 }
                 ItemSeparatorComponent={() => <View style={styles.customerSeparator} />}
               />
@@ -1154,6 +1318,108 @@ export default function CartScreen() {
               onPress={handleApplyDiscount}
             >
               <Text style={styles.applyDiscountButtonText}>Appliquer la remise</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Loyalty Points Modal */}
+      <Modal
+        visible={showLoyaltyPointsModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowLoyaltyPointsModal(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Utiliser les points de fidélité</Text>
+            <TouchableOpacity onPress={() => setShowLoyaltyPointsModal(false)}>
+              <Ionicons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.discountForm}>
+            <View style={styles.loyaltyInfo}>
+              <Text style={styles.loyaltyInfoLabel}>Points disponibles:</Text>
+              <Text style={styles.loyaltyInfoValue}>{customerLoyaltyPoints} points</Text>
+            </View>
+
+            <View style={styles.loyaltyInfo}>
+              <Text style={styles.loyaltyInfoLabel}>Taux de conversion:</Text>
+              <Text style={styles.loyaltyInfoValue}>1 point = {formatCurrency(conversionRate)}</Text>
+            </View>
+
+            <Text style={styles.formLabel}>Nombre de points à utiliser</Text>
+            <View style={styles.discountInputContainer}>
+              <TextInput
+                style={styles.discountInput}
+                value={loyaltyPointsUsed > 0 ? loyaltyPointsUsed.toString() : ''}
+                onChangeText={(text) => {
+                  const points = parseInt(text) || 0;
+                  const maxPoints = Math.min(customerLoyaltyPoints, Math.floor(subtotal / conversionRate));
+                  setLoyaltyPointsUsed(Math.min(points, maxPoints));
+                }}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="numeric"
+                selectTextOnFocus
+              />
+              <Text style={styles.discountSuffix}>points</Text>
+            </View>
+
+            {/* Quick Points Buttons */}
+            <View style={styles.quickDiscounts}>
+              {[100, 500, 1000, 2000, 5000].map((points) => {
+                const maxPoints = Math.min(customerLoyaltyPoints, Math.floor(subtotal / conversionRate));
+                if (points > maxPoints) return null;
+                return (
+                  <TouchableOpacity
+                    key={points}
+                    style={styles.quickDiscountButton}
+                    onPress={() => setLoyaltyPointsUsed(points)}
+                  >
+                    <Text style={styles.quickDiscountText}>{points}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {customerLoyaltyPoints > 0 && (
+                <TouchableOpacity
+                  style={styles.quickDiscountButton}
+                  onPress={() => {
+                    const maxPoints = Math.min(customerLoyaltyPoints, Math.floor(subtotal / conversionRate));
+                    setLoyaltyPointsUsed(maxPoints);
+                  }}
+                >
+                  <Text style={styles.quickDiscountText}>Max</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Preview */}
+            {loyaltyPointsUsed > 0 && (
+              <View style={styles.discountPreview}>
+                <Text style={styles.discountPreviewLabel}>Remise appliquée:</Text>
+                <Text style={styles.discountPreviewValue}>
+                  -{formatCurrency(loyaltyPointsUsed * conversionRate)}
+                </Text>
+                <Text style={styles.discountPreviewSubtext}>
+                  ({loyaltyPointsUsed} points utilisés)
+                </Text>
+              </View>
+            )}
+
+            {/* Apply Button */}
+            <TouchableOpacity
+              style={[styles.applyDiscountButton, loyaltyPointsUsed === 0 && styles.applyDiscountButtonDisabled]}
+              onPress={() => {
+                setShowLoyaltyPointsModal(false);
+                hapticNotification(Haptics.NotificationFeedbackType.Success);
+              }}
+              disabled={loyaltyPointsUsed === 0}
+            >
+              <Text style={styles.applyDiscountButtonText}>
+                {loyaltyPointsUsed > 0 ? `Utiliser ${loyaltyPointsUsed} points` : 'Annuler'}
+              </Text>
             </TouchableOpacity>
           </View>
         </SafeAreaView>
@@ -1734,6 +2000,61 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.text,
   },
+  loyaltyPointsText: {
+    fontSize: fontSize.xs,
+    color: colors.success,
+    marginTop: spacing.xs / 2,
+  },
+  loyaltyDiscountBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.success + '15',
+    borderRadius: borderRadius.md,
+    gap: spacing.sm,
+  },
+  loyaltyDiscountText: {
+    flex: 1,
+    fontSize: fontSize.sm,
+    color: colors.success,
+    fontWeight: '500',
+  },
+  loyaltyDiscountRemove: {
+    padding: spacing.xs,
+  },
+  summaryLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  loyaltyInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    marginBottom: spacing.md,
+  },
+  loyaltyInfoLabel: {
+    fontSize: fontSize.md,
+    color: colors.textMuted,
+  },
+  loyaltyInfoValue: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  discountPreviewSubtext: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    marginTop: spacing.xs / 2,
+  },
+  applyDiscountButtonDisabled: {
+    opacity: 0.5,
+  },
   customerClearButton: {
     padding: spacing.xs,
   },
@@ -1789,6 +2110,32 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.primary,
   },
+  quickCreateFromPhoneButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.successLight + '20',
+    borderRadius: borderRadius.lg,
+    borderWidth: 2,
+    borderColor: colors.success,
+    gap: spacing.sm,
+  },
+  quickCreateFromPhoneTextContainer: {
+    flex: 1,
+  },
+  quickCreateFromPhoneText: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.success,
+    marginBottom: spacing.xs / 2,
+  },
+  quickCreateFromPhoneNumber: {
+    fontSize: fontSize.sm,
+    color: colors.textMuted,
+    fontWeight: '500',
+  },
   customerItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1813,10 +2160,15 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.text,
   },
+  customerItemPhoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs / 2,
+    marginTop: 2,
+  },
   customerItemPhone: {
     fontSize: fontSize.sm,
     color: colors.textMuted,
-    marginTop: 2,
   },
   customerSeparator: {
     height: 1,
@@ -1830,6 +2182,14 @@ const styles = StyleSheet.create({
   emptyCustomersText: {
     fontSize: fontSize.md,
     color: colors.textMuted,
+    marginTop: spacing.md,
+  },
+  emptyCustomersHint: {
+    fontSize: fontSize.sm,
+    color: colors.textMuted,
+    marginTop: spacing.sm,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
   addCustomerForm: {
     padding: spacing.lg,

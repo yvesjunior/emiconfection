@@ -12,7 +12,11 @@ router.use(authenticate);
 
 // GET /api/employees - List employees
 router.get('/', requirePermission(PERMISSIONS.EMPLOYEES_VIEW), async (req: AuthenticatedRequest, res: Response) => {
-  const result = await employeesService.getEmployees(req.query as any);
+  const result = await employeesService.getEmployees(
+    req.query as any,
+    req.employee!.id,
+    req.employee!.roleName
+  );
   res.json({ success: true, ...result });
 });
 
@@ -29,7 +33,11 @@ router.post('/', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req: Au
     req.body.warehouseId = null;
   }
   const input = createEmployeeSchema.parse(req.body);
-  const result = await employeesService.createEmployee(input);
+  const result = await employeesService.createEmployee(
+    input,
+    req.employee!.id,
+    req.employee!.roleName
+  );
   res.status(201).json({ success: true, data: result });
 });
 
@@ -40,7 +48,12 @@ router.put('/:id', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req: 
     req.body.warehouseId = null;
   }
   const input = updateEmployeeSchema.parse(req.body);
-  const result = await employeesService.updateEmployee(req.params.id, input);
+  const result = await employeesService.updateEmployee(
+    req.params.id,
+    input,
+    req.employee!.id,
+    req.employee!.roleName
+  );
   res.json({ success: true, data: result });
 });
 

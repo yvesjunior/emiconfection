@@ -21,6 +21,7 @@ export const createSaleSchema = z.object({
   payments: z.array(paymentSchema).min(1, 'At least one payment is required'),
   discountType: z.enum(['percentage', 'fixed']).optional().nullable(),
   discountValue: z.number().min(0).optional().nullable(),
+  loyaltyPointsUsed: z.number().int().min(0).optional().default(0),
   taxRate: z.number().min(0).optional(),
   notes: z.string().optional(),
 });

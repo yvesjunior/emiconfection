@@ -52,9 +52,9 @@ router.put('/:id', requirePermission(PERMISSIONS.PRODUCTS_UPDATE), async (req: A
   res.json({ success: true, data: result });
 });
 
-// DELETE /api/products/:id - Delete (deactivate) product
+// DELETE /api/products/:id - Delete product (admin only)
 router.delete('/:id', requirePermission(PERMISSIONS.PRODUCTS_DELETE), async (req: AuthenticatedRequest, res: Response) => {
-  const result = await productsService.deleteProduct(req.params.id);
+  const result = await productsService.deleteProduct(req.params.id, req.employee!.roleName);
   res.json({ success: true, ...result });
 });
 

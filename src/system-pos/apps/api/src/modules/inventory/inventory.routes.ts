@@ -3,7 +3,9 @@ import { AuthenticatedRequest } from '../../common/types/index.js';
 import { authenticate, requirePermission, getWarehouseScope, getWarehouseForCreate } from '../../common/middleware/auth.js';
 import { PERMISSIONS } from '../../config/constants.js';
 import * as inventoryService from './inventory.service.js';
+import * as transferRequestsService from './transfer-requests.service.js';
 import { adjustStockSchema, transferStockSchema, setStockLevelsSchema } from './inventory.schema.js';
+import { createTransferRequestSchema, approveTransferRequestSchema } from './transfer-requests.schema.js';
 
 const router = Router();
 
@@ -60,6 +62,41 @@ router.post('/transfer', requirePermission(PERMISSIONS.INVENTORY_MANAGE), async 
 router.put('/levels', requirePermission(PERMISSIONS.INVENTORY_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
   const input = setStockLevelsSchema.parse(req.body);
   const result = await inventoryService.setStockLevels(input);
+  res.json({ success: true, data: result });
+});
+
+// GET /api/inventory/transfer-requests - List transfer requests
+router.get('/transfer-requests', requirePermission(PERMISSIONS.INVENTORY_VIEW), async (req: AuthenticatedRequest, res: Response) => {
+  const result = await transferRequestsService.getTransferRequests(
+    req.query as any,
+    req.employee!.id,
+    req.employee!.roleName
+  );
+  res.json({ success: true, ...result });
+});
+
+// GET /api/inventory/transfer-requests/:id - Get transfer request by ID
+router.get('/transfer-requests/:id', requirePermission(PERMISSIONS.INVENTORY_VIEW), async (req: AuthenticatedRequest, res: Response) => {
+  const result = await transferRequestsService.getTransferRequestById(req.params.id);
+  res.json({ success: true, data: result });
+});
+
+// POST /api/inventory/transfer-requests - Create transfer request
+router.post('/transfer-requests', requirePermission(PERMISSIONS.INVENTORY_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+  const input = createTransferRequestSchema.parse(req.body);
+  const result = await transferRequestsService.createTransferRequest(input, req.employee!.id);
+  res.status(201).json({ success: true, data: result });
+});
+
+// PUT /api/inventory/transfer-requests/:id/approve - Approve/reject transfer request
+router.put('/transfer-requests/:id/approve', requirePermission(PERMISSIONS.INVENTORY_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+  const input = approveTransferRequestSchema.parse(req.body);
+  const result = await transferRequestsService.approveTransferRequest(
+    req.params.id,
+    input,
+    req.employee!.id,
+    req.employee!.roleName
+  );
   res.json({ success: true, data: result });
 });
 

@@ -34,8 +34,8 @@ router.post('/', requirePermission(PERMISSIONS.CUSTOMERS_ADD_QUICK), async (req:
   res.status(201).json({ success: true, data: result });
 });
 
-// PUT /api/customers/:id - Update customer
-router.put('/:id', requirePermission(PERMISSIONS.CUSTOMERS_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+// PUT /api/customers/:id - Update customer (allowed for sellers with CUSTOMERS_ADD_QUICK)
+router.put('/:id', requirePermission(PERMISSIONS.CUSTOMERS_MANAGE, PERMISSIONS.CUSTOMERS_ADD_QUICK), async (req: AuthenticatedRequest, res: Response) => {
   const input = updateCustomerSchema.parse(req.body);
   const result = await customersService.updateCustomer(req.params.id, input);
   res.json({ success: true, data: result });
@@ -45,6 +45,17 @@ router.put('/:id', requirePermission(PERMISSIONS.CUSTOMERS_MANAGE), async (req: 
 router.delete('/:id', requirePermission(PERMISSIONS.CUSTOMERS_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
   const result = await customersService.deleteCustomer(req.params.id);
   res.json({ success: true, ...result });
+});
+
+// POST /api/customers/:id/redeem-points - Redeem loyalty points for discount
+router.post('/:id/redeem-points', requirePermission(PERMISSIONS.CUSTOMERS_VIEW), async (req: AuthenticatedRequest, res: Response) => {
+  const { points } = req.body;
+  if (!points || typeof points !== 'number' || points <= 0) {
+    res.status(400).json({ success: false, message: 'Invalid points value' });
+    return;
+  }
+  const result = await customersService.redeemLoyaltyPoints(req.params.id, points);
+  res.json({ success: true, data: result });
 });
 
 export { router as customersRouter };

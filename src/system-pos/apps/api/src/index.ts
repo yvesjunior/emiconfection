@@ -18,6 +18,7 @@ import { shiftsRouter } from './modules/shifts/shifts.routes.js';
 import { salesRouter } from './modules/sales/sales.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
 import { expensesRouter } from './modules/expenses/expenses.routes.js';
+import { reportsRouter } from './modules/reports/reports.routes.js';
 
 dotenv.config();
 
@@ -58,6 +59,7 @@ app.get('/api', (_req, res) => {
       '/api/sales',
       '/api/settings',
       '/api/expenses',
+      '/api/reports',
     ],
   });
 });
@@ -75,6 +77,7 @@ app.use('/api/shifts', shiftsRouter);
 app.use('/api/sales', salesRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/expenses', expensesRouter);
+app.use('/api/reports', reportsRouter);
 
 // Error handler (must be last)
 app.use(errorHandler);

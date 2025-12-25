@@ -14,7 +14,7 @@ COPY prisma ./prisma/
 RUN npm install
 
 # Generate Prisma client
-RUN npx prisma generate
+RUN npm install prisma@5.22.0 --save-dev && ./node_modules/.bin/prisma generate
 
 # Copy source code
 COPY . .
@@ -42,5 +42,5 @@ COPY --from=builder /app/package.json ./
 EXPOSE 3001
 
 # Start the application
-CMD ["sh", "-c", "npx prisma migrate deploy && npm start"]
+CMD ["npm", "start"]
 

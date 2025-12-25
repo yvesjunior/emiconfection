@@ -66,6 +66,7 @@ export default function SalesScreen() {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
   const hasPermission = useAuthStore((state) => state.hasPermission);
+  const employee = useAuthStore((state) => state.employee);
 
   const canVoid = hasPermission('sales:void');
   const canRefund = hasPermission('sales:refund');
@@ -498,7 +499,7 @@ export default function SalesScreen() {
               {/* Payment */}
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Paiement</Text>
-                {detailSale.payments.map((payment, index) => (
+                {detailSale.payments.map((payment: { method: string; amount: string; amountReceived?: string; changeGiven?: string }, index: number) => (
                   <View key={index} style={styles.paymentRow}>
                     <View style={styles.paymentMethod}>
                       <Ionicons

@@ -67,11 +67,13 @@ model Employee {
   role      Role       @relation(fields: [roleId], references: [id])
   warehouse Warehouse? @relation(fields: [warehouseId], references: [id])
 
-  shifts         Shift[]
-  sales          Sale[]
-  stockMovements StockMovement[]
-  purchaseOrders PurchaseOrder[]
-  auditLogs      AuditLog[]
+  shifts                Shift[]
+  sales                 Sale[]
+  stockMovements        StockMovement[]
+  purchaseOrders        PurchaseOrder[]
+  auditLogs             AuditLog[]
+  transferRequests      StockTransferRequest[] @relation("TransferRequester")
+  transferApprovals     StockTransferRequest[] @relation("TransferApprover")
 
   @@map("employees")
 }
@@ -131,6 +133,7 @@ model Product {
   stockMovements     StockMovement[]
   saleItems          SaleItem[]
   purchaseOrderItems PurchaseOrderItem[]
+  transferRequests   StockTransferRequest[]
 
   @@map("products")
 }
@@ -139,24 +142,32 @@ model Product {
 // INVENTORY & WAREHOUSES
 // ============================================
 
+enum WarehouseType {
+  BOUTIQUE
+  STOCKAGE
+}
+
 model Warehouse {
-  id        String   @id @default(uuid())
+  id        String        @id @default(uuid())
   name      String
-  code      String   @unique
+  code      String        @unique
+  type      WarehouseType @default(BOUTIQUE)
   address   String?
   phone     String?
-  isActive  Boolean  @default(true) @map("is_active")
-  isDefault Boolean  @default(false) @map("is_default")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  isActive  Boolean       @default(true) @map("is_active")
+  isDefault Boolean       @default(false) @map("is_default")
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
 
-  employees      Employee[]
-  inventory      Inventory[]
-  stockMovements StockMovement[]
-  shifts         Shift[]
-  sales          Sale[]
-  purchaseOrders PurchaseOrder[]
-  expenses       Expense[]
+  employees            Employee[]
+  inventory            Inventory[]
+  stockMovements       StockMovement[]
+  shifts               Shift[]
+  sales                Sale[]
+  purchaseOrders       PurchaseOrder[]
+  expenses             Expense[]
+  transferRequestsFrom StockTransferRequest[] @relation("TransferFrom")
+  transferRequestsTo   StockTransferRequest[] @relation("TransferTo")
 
   @@map("warehouses")
 }
@@ -196,6 +207,28 @@ model StockMovement {
   employee  Employee  @relation(fields: [createdBy], references: [id])
 
   @@map("stock_movements")
+}
+
+model StockTransferRequest {
+  id              String   @id @default(uuid())
+  productId       String   @map("product_id")
+  fromWarehouseId String   @map("from_warehouse_id")
+  toWarehouseId   String   @map("to_warehouse_id")
+  quantity        Decimal  @db.Decimal(10, 3)
+  status          String   @default("pending") // pending, approved, rejected
+  requestedBy     String   @map("requested_by")
+  approvedBy      String?  @map("approved_by")
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  product       Product   @relation(fields: [productId], references: [id])
+  fromWarehouse Warehouse @relation("TransferFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse @relation("TransferTo", fields: [toWarehouseId], references: [id])
+  requester     Employee  @relation("TransferRequester", fields: [requestedBy], references: [id])
+  approver      Employee? @relation("TransferApprover", fields: [approvedBy], references: [id])
+
+  @@map("stock_transfer_requests")
 }
 
 // ============================================
@@ -254,6 +287,7 @@ model Sale {
   discountType   String?  @map("discount_type") // percentage, fixed
   discountValue  Decimal? @map("discount_value") @db.Decimal(10, 2)
   discountAmount Decimal  @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  loyaltyPointsUsed Int   @default(0) @map("loyalty_points_used")
   taxRate        Decimal  @map("tax_rate") @db.Decimal(5, 2)
   taxAmount      Decimal  @map("tax_amount") @db.Decimal(10, 2)
   total          Decimal  @db.Decimal(10, 2)

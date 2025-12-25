@@ -32,20 +32,28 @@ export async function getProducts(query: ProductQuery) {
     };
   }
 
-  if (query.isActive !== undefined) {
-    where.isActive = query.isActive === 'true';
+  // Filter by active status
+  // If isActive is explicitly set to 'false', show inactive products
+  // If isActive is 'true' or undefined, show only active products
+  if (query.isActive === 'false') {
+    where.isActive = false;
+  } else if (query.isActive === 'true') {
+    where.isActive = true;
+  } else {
+    // Default: only show active products (for POS/sell mode)
+    where.isActive = true;
   }
 
   const includeInventory = query.warehouseId
     ? {
         inventory: {
           where: { warehouseId: query.warehouseId },
-          include: { warehouse: { select: { id: true, name: true } } },
+          include: { warehouse: { select: { id: true, name: true, code: true, type: true } } },
         },
       }
     : {
         inventory: {
-          include: { warehouse: { select: { id: true, name: true } } },
+          include: { warehouse: { select: { id: true, name: true, code: true, type: true } } },
         },
       };
 
@@ -87,7 +95,7 @@ export async function getProductById(id: string) {
       },
       inventory: {
         include: {
-          warehouse: { select: { id: true, name: true, code: true } },
+          warehouse: { select: { id: true, name: true, code: true, type: true } },
         },
       },
     },
@@ -115,7 +123,7 @@ export async function getProductByBarcode(barcode: string) {
       },
       inventory: {
         include: {
-          warehouse: { select: { id: true, name: true, code: true } },
+          warehouse: { select: { id: true, name: true, code: true, type: true } },
         },
       },
     },
@@ -348,7 +356,12 @@ export async function updateProduct(id: string, input: UpdateProductInput) {
   };
 }
 
-export async function deleteProduct(id: string) {
+export async function deleteProduct(id: string, employeeRoleName: string) {
+  // Only admin can delete products from database
+  if (employeeRoleName !== 'admin') {
+    throw ApiError.forbidden('Only administrators can delete products from the database');
+  }
+
   const product = await prisma.product.findUnique({
     where: { id },
   });
@@ -357,12 +370,45 @@ export async function deleteProduct(id: string) {
     throw ApiError.notFound('Product not found');
   }
 
-  // Soft delete - set inactive
-  await prisma.product.update({
-    where: { id },
-    data: { isActive: false },
+  // Check if product has been used in sales
+  const saleItemsCount = await prisma.saleItem.count({
+    where: { productId: id },
   });
 
-  return { message: 'Product deactivated successfully' };
+  if (saleItemsCount > 0) {
+    throw ApiError.badRequest(
+      `Cannot delete product that has been used in ${saleItemsCount} sale(s). The product must remain for historical records.`
+    );
+  }
+
+  // Check if product has been used in purchase orders
+  const purchaseOrderItemsCount = await prisma.purchaseOrderItem.count({
+    where: { productId: id },
+  });
+
+  if (purchaseOrderItemsCount > 0) {
+    throw ApiError.badRequest(
+      `Cannot delete product that has been used in ${purchaseOrderItemsCount} purchase order(s). The product must remain for historical records.`
+    );
+  }
+
+  // Hard delete - delete the product and all related data in a transaction
+  // Prisma will cascade delete:
+  // - ProductCategory (onDelete: Cascade)
+  // - Inventory (onDelete: Cascade)
+  // StockMovements will remain for audit trail (no cascade, but we'll handle them)
+  await prisma.$transaction(async (tx) => {
+    // Delete stock movements first (they don't have cascade)
+    await tx.stockMovement.deleteMany({
+      where: { productId: id },
+    });
+
+    // Delete the product (cascades to ProductCategory and Inventory)
+    await tx.product.delete({
+      where: { id },
+    });
+  });
+
+  return { message: 'Product deleted successfully' };
 }
 

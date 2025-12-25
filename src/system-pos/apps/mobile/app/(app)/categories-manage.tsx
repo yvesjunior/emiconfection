@@ -148,7 +148,7 @@ export default function CategoriesManageScreen() {
       Alert.alert(
         'Succès',
         isEditing ? 'Catégorie modifiée avec succès' : 'Catégorie créée avec succès',
-        [{ text: 'OK', onPress: () => router.back() }]
+        [{ text: 'OK', onPress: () => router.replace('/(app)/categories-list') }]
       );
     },
     onError: (error: any) => {
@@ -168,7 +168,7 @@ export default function CategoriesManageScreen() {
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['categories'] });
       Alert.alert('Succès', 'Catégorie supprimée avec succès', [
-        { text: 'OK', onPress: () => router.back() },
+        { text: 'OK', onPress: () => router.replace('/(app)/categories-list') },
       ]);
     },
     onError: (error: any) => {

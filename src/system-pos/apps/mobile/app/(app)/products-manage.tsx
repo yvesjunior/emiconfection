@@ -11,6 +11,8 @@ import {
   Platform,
   KeyboardAvoidingView,
   Image,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -30,6 +32,17 @@ const hapticNotification = (type: Haptics.NotificationFeedbackType) => {
 interface Category {
   id: string;
   name: string;
+}
+
+interface InventoryItem {
+  id: string;
+  quantity: string;
+  warehouse: {
+    id: string;
+    name: string;
+    code: string;
+    type: 'BOUTIQUE' | 'STOCKAGE';
+  };
 }
 
 export default function ProductsManageScreen() {
@@ -79,8 +92,14 @@ export default function ProductsManageScreen() {
   const [stock, setStock] = useState('0');
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [categorySearch, setCategorySearch] = useState('');
   const [scannerVisible, setScannerVisible] = useState(false);
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [showStockModal, setShowStockModal] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferFromWarehouse, setTransferFromWarehouse] = useState<string | null>(null);
+  const [transferQuantity, setTransferQuantity] = useState('');
+  const [editingWarehouseStock, setEditingWarehouseStock] = useState<{ warehouseId: string; quantity: string } | null>(null);
 
   // Check permissions
   const canCreate = hasPermission('products:create');
@@ -121,6 +140,11 @@ export default function ProductsManageScreen() {
   });
 
   const categories: Category[] = categoriesData || [];
+  
+  // Filter categories based on search
+  const filteredCategories = categories.filter((cat) =>
+    cat.name.toLowerCase().includes(categorySearch.toLowerCase())
+  );
 
   // Fetch product if editing
   const { data: productData, isLoading: isLoadingProduct } = useQuery({
@@ -187,15 +211,66 @@ export default function ProductsManageScreen() {
   // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: async () => {
+      if (!productId) {
+        throw new Error('Product ID is required');
+      }
       const res = await api.delete(`/products/${productId}`);
       return res.data;
     },
     onSuccess: () => {
       hapticNotification(Haptics.NotificationFeedbackType.Success);
+      // Invalidate all product queries to refresh lists
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['product'] });
+      queryClient.removeQueries({ queryKey: ['product', productId] });
+      queryClient.removeQueries({ queryKey: ['products'] });
+      // Force refetch to ensure the product is removed from the list
+      queryClient.refetchQueries({ queryKey: ['products'] });
       Alert.alert('Succès', 'Produit supprimé avec succès', [
-        { text: 'OK', onPress: () => router.back() },
+        { text: 'OK', onPress: () => router.replace('/(app)/') },
       ]);
+    },
+    onError: (error: any) => {
+      hapticNotification(Haptics.NotificationFeedbackType.Error);
+      console.error('Delete error:', error);
+      console.error('Error response:', error.response);
+      console.error('Error message:', error.message);
+      
+      let message = 'Une erreur est survenue lors de la suppression';
+      if (error.response) {
+        if (error.response.status === 403) {
+          message = 'Vous n\'avez pas la permission de supprimer des produits';
+        } else if (error.response.status === 404) {
+          message = 'Produit introuvable';
+        } else if (error.response.status === 400) {
+          // Bad request - product used in sales or purchase orders
+          message = error.response.data?.message || 'Ce produit ne peut pas être supprimé car il a été utilisé dans des ventes ou des commandes d\'achat.';
+        } else if (error.response.data?.message) {
+          message = error.response.data.message;
+        }
+      } else if (error.message) {
+        message = error.message;
+      }
+      
+      Alert.alert('Impossible de supprimer', message);
+    },
+  });
+
+  // Update stock for specific warehouse mutation
+  const updateWarehouseStockMutation = useMutation({
+    mutationFn: async ({ warehouseId, quantity }: { warehouseId: string; quantity: number }) => {
+      const res = await api.put(`/products/${productId}`, {
+        warehouseId,
+        stock: quantity,
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      hapticNotification(Haptics.NotificationFeedbackType.Success);
+      queryClient.invalidateQueries({ queryKey: ['product', productId] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      setEditingWarehouseStock(null);
+      Alert.alert('Succès', 'Stock mis à jour avec succès');
     },
     onError: (error: any) => {
       hapticNotification(Haptics.NotificationFeedbackType.Error);
@@ -240,7 +315,7 @@ export default function ProductsManageScreen() {
   const handleDelete = () => {
     Alert.alert(
       'Supprimer le produit',
-      `Êtes-vous sûr de vouloir supprimer "${name}" ? Cette action est irréversible.`,
+      `Êtes-vous sûr de vouloir supprimer définitivement "${name}" ?\n\nCette action est irréversible et supprimera toutes les données associées (catégories, stocks).\n\nNote: Le produit ne peut pas être supprimé s'il a été utilisé dans des ventes ou des commandes d'achat.`,
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -332,12 +407,8 @@ export default function ProductsManageScreen() {
       minStockLevel: Number(minStockLevel) || 10,
       categoryIds: selectedCategoryIds,
       isActive: true,
+      stock: Number(stock) || 0,
     };
-
-    // Include stock only when creating
-    if (!isEditing) {
-      data.stock = Number(stock) || 0;
-    }
 
     saveMutation.mutate(data);
   };
@@ -476,7 +547,12 @@ export default function ProductsManageScreen() {
             <Text style={styles.sectionTitle}>Catégories</Text>
             <TouchableOpacity
               style={styles.categorySelector}
-              onPress={() => setShowCategoryPicker(!showCategoryPicker)}
+              onPress={() => {
+                setShowCategoryPicker(!showCategoryPicker);
+                if (showCategoryPicker) {
+                  setCategorySearch(''); // Clear search when closing
+                }
+              }}
             >
               <Text style={styles.categorySelectorText}>
                 {selectedCategoryIds.length > 0
@@ -492,31 +568,53 @@ export default function ProductsManageScreen() {
 
             {showCategoryPicker && (
               <View style={styles.categoryPicker}>
-                {categories.map((category) => (
-                  <TouchableOpacity
-                    key={category.id}
-                    style={[
-                      styles.categoryOption,
-                      selectedCategoryIds.includes(category.id) && styles.categoryOptionSelected,
-                    ]}
-                    onPress={() => toggleCategory(category.id)}
-                  >
-                    <Text
+                {/* Search Input */}
+                <View style={styles.categorySearchContainer}>
+                  <Ionicons name="search" size={20} color={colors.textMuted} />
+                  <TextInput
+                    style={styles.categorySearchInput}
+                    placeholder="Rechercher une catégorie..."
+                    placeholderTextColor={colors.textMuted}
+                    value={categorySearch}
+                    onChangeText={setCategorySearch}
+                    autoCapitalize="none"
+                  />
+                  {categorySearch.length > 0 && (
+                    <TouchableOpacity onPress={() => setCategorySearch('')}>
+                      <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Categories List */}
+                {filteredCategories.length > 0 ? (
+                  filteredCategories.map((category) => (
+                    <TouchableOpacity
+                      key={category.id}
                       style={[
-                        styles.categoryOptionText,
-                        selectedCategoryIds.includes(category.id) &&
-                          styles.categoryOptionTextSelected,
+                        styles.categoryOption,
+                        selectedCategoryIds.includes(category.id) && styles.categoryOptionSelected,
                       ]}
+                      onPress={() => toggleCategory(category.id)}
                     >
-                      {category.name}
-                    </Text>
-                    {selectedCategoryIds.includes(category.id) && (
-                      <Ionicons name="checkmark" size={18} color={colors.primary} />
-                    )}
-                  </TouchableOpacity>
-                ))}
-                {categories.length === 0 && (
-                  <Text style={styles.noCategoriesText}>Aucune catégorie disponible</Text>
+                      <Text
+                        style={[
+                          styles.categoryOptionText,
+                          selectedCategoryIds.includes(category.id) &&
+                            styles.categoryOptionTextSelected,
+                        ]}
+                      >
+                        {category.name}
+                      </Text>
+                      {selectedCategoryIds.includes(category.id) && (
+                        <Ionicons name="checkmark" size={18} color={colors.primary} />
+                      )}
+                    </TouchableOpacity>
+                  ))
+                ) : (
+                  <Text style={styles.noCategoriesText}>
+                    {categorySearch ? 'Aucune catégorie trouvée' : 'Aucune catégorie disponible'}
+                  </Text>
                 )}
               </View>
             )}
@@ -567,24 +665,41 @@ export default function ProductsManageScreen() {
 
           {/* Stock Section */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Stock</Text>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Stock</Text>
+              {isEditing && productData?.inventory && (
+                <TouchableOpacity
+                  style={styles.viewStocksButton}
+                  onPress={() => setShowStockModal(true)}
+                >
+                  <Ionicons name="eye-outline" size={18} color={colors.primary} />
+                  <Text style={styles.viewStocksButtonText}>Voir par entrepôt</Text>
+                </TouchableOpacity>
+              )}
+            </View>
 
             <View style={styles.row}>
-              {!isEditing && (
-                <View style={[styles.inputGroup, styles.halfWidth]}>
-                  <Text style={styles.label}>Stock initial</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={stock}
-                    onChangeText={setStock}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="numeric"
-                  />
-                </View>
-              )}
+              <View style={[styles.inputGroup, styles.halfWidth]}>
+                <Text style={styles.label}>Stock {isEditing ? 'actuel' : 'initial'}</Text>
+                <TextInput
+                  style={styles.input}
+                  value={stock}
+                  onChangeText={setStock}
+                  placeholder="0"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="numeric"
+                  editable={true}
+                />
+                {isEditing && productData?.inventory && (
+                  <Text style={styles.helperText}>
+                    Total: {productData.inventory.reduce((sum: number, inv: InventoryItem) => 
+                      sum + Number(inv.quantity || 0), 0
+                    )}
+                  </Text>
+                )}
+              </View>
 
-              <View style={[styles.inputGroup, isEditing ? styles.fullWidth : styles.halfWidth]}>
+              <View style={[styles.inputGroup, styles.halfWidth]}>
                 <Text style={styles.label}>Stock minimum</Text>
                 <TextInput
                   style={styles.input}
@@ -596,15 +711,6 @@ export default function ProductsManageScreen() {
                 />
               </View>
             </View>
-
-            {isEditing && (
-              <View style={styles.stockInfo}>
-                <Ionicons name="information-circle-outline" size={18} color={colors.textMuted} />
-                <Text style={styles.stockInfoText}>
-                  Pour modifier le stock, utilisez la fonction d'ajustement d'inventaire
-                </Text>
-              </View>
-            )}
           </View>
 
           {/* Delete Button */}
@@ -634,7 +740,7 @@ export default function ProductsManageScreen() {
                 </TouchableOpacity>
               </View>
               <Text style={styles.deleteWarning}>
-                Cette action est irréversible et supprimera toutes les données associées
+                Cette action supprimera définitivement le produit et toutes ses données (catégories, stocks). Le produit ne peut pas être supprimé s'il a été utilisé dans des ventes ou des commandes d'achat.
               </Text>
             </View>
           )}
@@ -653,6 +759,346 @@ export default function ProductsManageScreen() {
         showModeToggle={false}
         initialMode="manage"
       />
+
+      {/* Stock by Warehouse Modal */}
+      <Modal
+        visible={showStockModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowStockModal(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Stocks par entrepôt</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowStockModal(false)}
+            >
+              <Ionicons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <FlatList
+            data={productData?.inventory || []}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }: { item: InventoryItem }) => {
+              const qty = Number(item.quantity || 0);
+              const isBoutique = item.warehouse.type === 'BOUTIQUE';
+              const isStockage = item.warehouse.type === 'STOCKAGE';
+              const currentWarehouse = employee?.warehouse || null;
+              const isCurrentWarehouse = currentWarehouse?.id === item.warehouse.id;
+              const canEdit = hasPermission('inventory:adjust') && isCurrentWarehouse;
+              
+              return (
+                <View style={[
+                  styles.stockItem,
+                  !isCurrentWarehouse && styles.stockItemReadOnly
+                ]}>
+                  <View style={styles.stockItemHeader}>
+                    <View style={styles.stockItemInfo}>
+                      <View style={styles.stockItemTitleRow}>
+                        <Text style={styles.stockWarehouseName}>{item.warehouse.name}</Text>
+                        {isCurrentWarehouse && (
+                          <View style={styles.currentWarehouseBadge}>
+                            <Text style={styles.currentWarehouseBadgeText}>Connecté</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.stockWarehouseCode}>{item.warehouse.code}</Text>
+                    </View>
+                    <View style={[
+                      styles.stockTypeBadge,
+                      isBoutique ? styles.stockTypeBadgeBoutique : styles.stockTypeBadgeStockage
+                    ]}>
+                      <Ionicons
+                        name={isBoutique ? 'storefront' : 'archive'}
+                        size={14}
+                        color={isBoutique ? colors.primary : colors.success}
+                      />
+                      <Text style={[
+                        styles.stockTypeBadgeText,
+                        isBoutique ? styles.stockTypeBadgeTextBoutique : styles.stockTypeBadgeTextStockage
+                      ]}>
+                        {isBoutique ? 'Boutique' : 'Stockage'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.stockQuantityRow}>
+                    <Text style={styles.stockQuantityLabel}>Quantité disponible:</Text>
+                    {editingWarehouseStock?.warehouseId === item.warehouse.id ? (
+                      <View style={styles.stockEditContainer}>
+                        <TextInput
+                          style={styles.stockEditInput}
+                          value={editingWarehouseStock.quantity}
+                          onChangeText={(text) => setEditingWarehouseStock({ 
+                            warehouseId: item.warehouse.id, 
+                            quantity: text 
+                          })}
+                          placeholder="0"
+                          keyboardType="numeric"
+                          autoFocus
+                        />
+                        <TouchableOpacity
+                          style={styles.stockEditSaveButton}
+                          onPress={() => {
+                            const newQty = Number(editingWarehouseStock.quantity);
+                            if (isNaN(newQty) || newQty < 0) {
+                              Alert.alert('Erreur', 'Veuillez entrer une quantité valide');
+                              return;
+                            }
+                            updateWarehouseStockMutation.mutate({
+                              warehouseId: item.warehouse.id,
+                              quantity: newQty,
+                            });
+                          }}
+                          disabled={updateWarehouseStockMutation.isPending}
+                        >
+                          {updateWarehouseStockMutation.isPending ? (
+                            <ActivityIndicator size="small" color={colors.textInverse} />
+                          ) : (
+                            <Ionicons name="checkmark" size={16} color={colors.textInverse} />
+                          )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.stockEditCancelButton}
+                          onPress={() => setEditingWarehouseStock(null)}
+                        >
+                          <Ionicons name="close" size={16} color={colors.text} />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <>
+                        <Text style={[
+                          styles.stockQuantity,
+                          qty === 0 && styles.stockQuantityZero,
+                          qty > 0 && qty <= 5 && styles.stockQuantityLow
+                        ]}>
+                          {qty}
+                        </Text>
+                        {canEdit ? (
+                          <TouchableOpacity
+                            style={styles.stockEditButton}
+                            onPress={() => setEditingWarehouseStock({ 
+                              warehouseId: item.warehouse.id, 
+                              quantity: qty.toString() 
+                            })}
+                          >
+                            <Ionicons name="pencil" size={14} color={colors.primary} />
+                          </TouchableOpacity>
+                        ) : !isCurrentWarehouse && (
+                          <View style={styles.readOnlyBadge}>
+                            <Ionicons name="eye-outline" size={12} color={colors.textMuted} />
+                            <Text style={styles.readOnlyBadgeText}>Lecture seule</Text>
+                          </View>
+                        )}
+                      </>
+                    )}
+                  </View>
+                  {isBoutique && qty === 0 && !editingWarehouseStock && (
+                    <TouchableOpacity
+                      style={styles.transferButton}
+                      onPress={() => {
+                        setShowStockModal(false);
+                        // Find a stockage warehouse with stock
+                        const stockageInv = productData?.inventory?.find((inv: InventoryItem) => 
+                          inv.warehouse.type === 'STOCKAGE' && Number(inv.quantity) > 0
+                        );
+                        if (stockageInv) {
+                          setTransferFromWarehouse(stockageInv.warehouse.id);
+                          setShowTransferModal(true);
+                        } else {
+                          Alert.alert('Aucun stock disponible', 'Aucun entrepôt Stockage n\'a de stock disponible pour ce produit');
+                        }
+                      }}
+                    >
+                      <Ionicons name="swap-horizontal" size={16} color={colors.primary} />
+                      <Text style={styles.transferButtonText}>Demander un transfert</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            }}
+            contentContainerStyle={styles.stockListContent}
+            ListEmptyComponent={
+              <View style={styles.emptyStockState}>
+                <Ionicons name="cube-outline" size={48} color={colors.textMuted} />
+                <Text style={styles.emptyStockStateText}>Aucun stock enregistré</Text>
+              </View>
+            }
+          />
+        </SafeAreaView>
+      </Modal>
+
+      {/* Transfer Stock Modal */}
+      <Modal
+        visible={showTransferModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setShowTransferModal(false);
+          setTransferFromWarehouse(null);
+          setTransferQuantity('');
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Demander un transfert</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => {
+                setShowTransferModal(false);
+                setTransferFromWarehouse(null);
+                setTransferQuantity('');
+              }}
+            >
+              <Ionicons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
+            <Text style={styles.modalSubtitle}>
+              Transférer depuis un entrepôt Stockage vers une Boutique
+            </Text>
+
+            {/* Source Warehouse Selection */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Depuis (Stockage) *</Text>
+              <FlatList
+                data={productData?.inventory?.filter((inv: InventoryItem) => 
+                  inv.warehouse.type === 'STOCKAGE' && Number(inv.quantity) > 0
+                ) || []}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }: { item: InventoryItem }) => (
+                  <TouchableOpacity
+                    style={[
+                      styles.warehouseOption,
+                      transferFromWarehouse === item.warehouse.id && styles.warehouseOptionSelected
+                    ]}
+                    onPress={() => setTransferFromWarehouse(item.warehouse.id)}
+                  >
+                    <View style={styles.warehouseOptionInfo}>
+                      <Text style={styles.warehouseOptionName}>{item.warehouse.name}</Text>
+                      <Text style={styles.warehouseOptionStock}>
+                        Disponible: {Number(item.quantity)}
+                      </Text>
+                    </View>
+                    {transferFromWarehouse === item.warehouse.id && (
+                      <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                    )}
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+
+            {/* Destination Warehouse Selection */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Vers (Boutique) *</Text>
+              <Text style={styles.helperText}>
+                {employee?.warehouse?.name || 'Votre entrepôt actuel'}
+              </Text>
+            </View>
+
+            {/* Quantity */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Quantité *</Text>
+              <TextInput
+                style={styles.input}
+                value={transferQuantity}
+                onChangeText={setTransferQuantity}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="numeric"
+              />
+              {transferFromWarehouse && (
+                <Text style={{ fontSize: fontSize.sm, color: colors.textMuted, marginTop: spacing.xs }}>
+                  Maximum disponible: {
+                    productData?.inventory?.find((inv: InventoryItem) => 
+                      inv.warehouse.id === transferFromWarehouse
+                    )?.quantity || 0
+                  }
+                </Text>
+              )}
+            </View>
+
+            {/* Notes */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Notes (optionnel)</Text>
+              <TextInput
+                style={[styles.input, styles.textArea]}
+                placeholder="Raison du transfert..."
+                placeholderTextColor={colors.textMuted}
+                multiline
+                numberOfLines={3}
+              />
+            </View>
+          </ScrollView>
+
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              style={[
+                styles.submitButton,
+                (!transferFromWarehouse || !transferQuantity || Number(transferQuantity) <= 0) &&
+                  styles.submitButtonDisabled
+              ]}
+              onPress={async () => {
+                if (!transferFromWarehouse || !transferQuantity || Number(transferQuantity) <= 0) {
+                  Alert.alert('Erreur', 'Veuillez remplir tous les champs requis');
+                  return;
+                }
+
+                const fromInv = productData?.inventory?.find((inv: InventoryItem) => 
+                  inv.warehouse.id === transferFromWarehouse
+                );
+                const maxQty = Number(fromInv?.quantity || 0);
+
+                if (Number(transferQuantity) > maxQty) {
+                  Alert.alert('Erreur', `Quantité insuffisante. Maximum: ${maxQty}`);
+                  return;
+                }
+
+                try {
+                  const currentWarehouse = employee?.warehouse;
+                  if (!currentWarehouse) {
+                    Alert.alert('Erreur', 'Aucun entrepôt sélectionné');
+                    return;
+                  }
+
+                  // Create transfer request instead of direct transfer
+                  await api.post('/inventory/transfer-requests', {
+                    productId: productId,
+                    fromWarehouseId: transferFromWarehouse,
+                    toWarehouseId: currentWarehouse.id,
+                    quantity: Number(transferQuantity),
+                    notes: 'Transfert demandé depuis l\'application mobile',
+                  });
+
+                  hapticNotification(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert(
+                    'Demande créée',
+                    'Votre demande de transfert a été créée. Elle sera examinée par un Manager.',
+                    [
+                      { text: 'OK', onPress: () => {
+                        setShowTransferModal(false);
+                        setTransferFromWarehouse(null);
+                        setTransferQuantity('');
+                        queryClient.invalidateQueries({ queryKey: ['product', productId] });
+                        queryClient.invalidateQueries({ queryKey: ['transfer-requests'] });
+                      }}
+                    ]
+                  );
+                } catch (error: any) {
+                  hapticNotification(Haptics.NotificationFeedbackType.Error);
+                  const message = error.response?.data?.message || 'Une erreur est survenue';
+                  Alert.alert('Erreur', message);
+                }
+              }}
+              disabled={!transferFromWarehouse || !transferQuantity || Number(transferQuantity) <= 0}
+            >
+              <Text style={styles.submitButtonText}>Demander le transfert</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -808,6 +1254,22 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     overflow: 'hidden',
   },
+  categorySearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.sm,
+  },
+  categorySearchInput: {
+    flex: 1,
+    fontSize: fontSize.md,
+    color: colors.text,
+    paddingVertical: spacing.xs,
+  },
   categoryOption: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -833,19 +1295,6 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
     color: colors.textMuted,
     textAlign: 'center',
-  },
-  stockInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: borderRadius.md,
-    padding: spacing.md,
-  },
-  stockInfoText: {
-    flex: 1,
-    fontSize: fontSize.sm,
-    color: colors.textMuted,
   },
   dangerSection: {
     marginHorizontal: spacing.lg,
@@ -943,6 +1392,289 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2,
     borderColor: colors.surface,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  viewStocksButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  viewStocksButtonText: {
+    fontSize: fontSize.sm,
+    color: colors.primary,
+    fontWeight: '500',
+  },
+  // Modal styles
+  modalContainer: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: {
+    fontSize: fontSize.xl,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  modalCloseButton: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+  },
+  modalSubtitle: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginTop: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  modalFooter: {
+    padding: spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  // Stock list styles
+  stockListContent: {
+    padding: spacing.lg,
+  },
+  stockItem: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  stockItemReadOnly: {
+    opacity: 0.7,
+    backgroundColor: colors.background,
+  },
+  stockItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  stockItemInfo: {
+    flex: 1,
+  },
+  stockItemTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  stockWarehouseName: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  currentWarehouseBadge: {
+    backgroundColor: colors.primaryLight + '20',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  currentWarehouseBadgeText: {
+    fontSize: fontSize.xs,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  readOnlyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+  },
+  readOnlyBadgeText: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    fontStyle: 'italic',
+  },
+  stockWarehouseCode: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  stockTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: borderRadius.sm,
+  },
+  stockTypeBadgeBoutique: {
+    backgroundColor: colors.primaryLight + '20',
+  },
+  stockTypeBadgeStockage: {
+    backgroundColor: colors.successLight + '20',
+  },
+  stockTypeBadgeText: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  stockTypeBadgeTextBoutique: {
+    color: colors.primary,
+  },
+  stockTypeBadgeTextStockage: {
+    color: colors.success,
+  },
+  stockQuantityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+  },
+  stockQuantityLabel: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+  },
+  stockQuantity: {
+    fontSize: fontSize.lg,
+    fontWeight: '700',
+    color: colors.success,
+  },
+  stockQuantityZero: {
+    color: colors.danger,
+  },
+  stockQuantityLow: {
+    color: colors.warning,
+  },
+  stockEditButton: {
+    padding: spacing.xs,
+  },
+  stockEditContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  stockEditInput: {
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    fontSize: fontSize.md,
+    color: colors.text,
+    minWidth: 80,
+    textAlign: 'center',
+    backgroundColor: colors.background,
+  },
+  stockEditSaveButton: {
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.sm,
+    padding: spacing.xs,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stockEditCancelButton: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.sm,
+    padding: spacing.xs,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  transferButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.primaryLight + '20',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  transferButtonText: {
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  emptyStockState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
+  },
+  emptyStockStateText: {
+    fontSize: fontSize.md,
+    color: colors.textMuted,
+    marginTop: spacing.md,
+  },
+  // Warehouse option styles
+  warehouseOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.surfaceSecondary,
+    marginBottom: spacing.sm,
+    borderWidth: 2,
+    borderColor: colors.border,
+  },
+  warehouseOptionSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight + '10',
+  },
+  warehouseOptionInfo: {
+    flex: 1,
+  },
+  warehouseOptionName: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  warehouseOptionStock: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  submitButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.lg,
+    alignItems: 'center',
+    ...shadows.md,
+  },
+  submitButtonDisabled: {
+    backgroundColor: colors.primaryLight,
+    opacity: 0.5,
+  },
+  submitButtonText: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.textInverse,
   },
 });
 

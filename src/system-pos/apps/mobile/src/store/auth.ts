@@ -6,6 +6,7 @@ interface Warehouse {
   name: string;
   code: string;
   address?: string;
+  type?: 'BOUTIQUE' | 'STOCKAGE';
 }
 
 interface Employee {
@@ -93,10 +94,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   loadStoredAuth: async () => {
     try {
-      const accessToken = await SecureStore.getItemAsync('accessToken');
-      const refreshToken = await SecureStore.getItemAsync('refreshToken');
-      const employeeStr = await SecureStore.getItemAsync('employee');
-      const selectedWarehouseStr = await SecureStore.getItemAsync('selectedWarehouse');
+      const [accessToken, refreshToken, employeeStr, selectedWarehouseStr] = await Promise.all([
+        SecureStore.getItemAsync('accessToken'),
+        SecureStore.getItemAsync('refreshToken'),
+        SecureStore.getItemAsync('employee'),
+        SecureStore.getItemAsync('selectedWarehouse'),
+      ]);
 
       if (accessToken && refreshToken && employeeStr) {
         const employee = JSON.parse(employeeStr);

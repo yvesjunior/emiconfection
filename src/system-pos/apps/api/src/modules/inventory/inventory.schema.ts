@@ -9,9 +9,9 @@ export const adjustStockSchema = z.object({
 });
 
 export const transferStockSchema = z.object({
-  productId: z.string().uuid('Invalid product ID'),
-  fromWarehouseId: z.string().uuid('Invalid source warehouse ID'),
-  toWarehouseId: z.string().uuid('Invalid destination warehouse ID'),
+  productId: z.string().min(1, 'Invalid product ID'),
+  fromWarehouseId: z.string().min(1, 'Invalid source warehouse ID'),
+  toWarehouseId: z.string().min(1, 'Invalid destination warehouse ID'),
   quantity: z.number().positive('Quantity must be positive'),
   notes: z.string().optional(),
 });

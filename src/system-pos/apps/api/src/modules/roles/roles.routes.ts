@@ -45,7 +45,7 @@ router.get('/', async (_req: AuthenticatedRequest, res: Response) => {
 });
 
 // GET /api/roles/permissions/all - List all available permissions (must be before :id route)
-router.get('/permissions/all', requireRole(ROLES.ADMIN), async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/permissions/all', async (_req: AuthenticatedRequest, res: Response) => {
   const permissions = await prisma.permission.findMany({
     orderBy: [{ resource: 'asc' }, { action: 'asc' }],
   });

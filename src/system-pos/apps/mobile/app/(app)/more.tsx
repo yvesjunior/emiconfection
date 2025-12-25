@@ -6,17 +6,21 @@ import {
   Alert,
   ScrollView,
   Platform,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../src/store/auth';
 import { useCartStore } from '../../src/store/cart';
 import { useAppModeStore } from '../../src/store/appMode';
 import { useOfflineQueueStore } from '../../src/store/offlineQueue';
 import { forceSync } from '../../src/lib/offlineSync';
+import api from '../../src/lib/api';
 import { colors, spacing, fontSize, borderRadius, shadows } from '../../src/lib/theme';
 
 const hapticNotification = (type: Haptics.NotificationFeedbackType) => {
@@ -27,11 +31,21 @@ const hapticImpact = () => {
   if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 };
 
+interface Warehouse {
+  id: string;
+  name: string;
+  code: string;
+  type?: 'BOUTIQUE' | 'STOCKAGE';
+  isActive?: boolean;
+}
+
 export default function MoreScreen() {
   const router = useRouter();
   const employee = useAuthStore((state) => state.employee);
   const logout = useAuthStore((state) => state.logout);
   const hasPermission = useAuthStore((state) => state.hasPermission);
+  const getEffectiveWarehouse = useAuthStore((state) => state.getEffectiveWarehouse);
+  const setSelectedWarehouse = useAuthStore((state) => state.setSelectedWarehouse);
   const clearCart = useCartStore((state) => state.clearCart);
   const mode = useAppModeStore((state) => state.mode);
   const canSwitchMode = useAppModeStore((state) => state.canSwitchMode);
@@ -41,6 +55,10 @@ export default function MoreScreen() {
   const pendingSales = useOfflineQueueStore((state) => state.pendingSales);
   const pendingCount = pendingSales.filter((s) => !s.synced).length;
   const [isSyncing, setIsSyncing] = useState(false);
+  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null);
+  
+  const currentWarehouse = getEffectiveWarehouse();
 
   const handleForceSync = async () => {
     if (!isOnline) {
@@ -76,10 +94,10 @@ export default function MoreScreen() {
   const canUpdateProducts = hasPermission('products:update');
   const canManageCategories = hasPermission('categories:manage');
   const canManageProducts = canCreateProducts || canUpdateProducts;
-  const hasManagementAccess = canManageProducts || canManageCategories;
-  
-  // Only show management items in manage mode
-  const showManagementSection = hasManagementAccess && mode === 'manage';
+  const canViewExpenses = hasPermission('expenses:view');
+  const canCreateExpenses = hasPermission('expenses:create');
+  const hasFinancialAccess = canViewExpenses || canCreateExpenses;
+  const hasManagementAccess = canManageProducts || canManageCategories || hasFinancialAccess;
 
   const handleModeSwitch = async () => {
     if (!canSwitchMode) {
@@ -92,6 +110,64 @@ export default function MoreScreen() {
     const newMode = mode === 'sell' ? 'manage' : 'sell';
     await setMode(newMode);
     hapticImpact();
+    // Navigate to main screen to refresh tabs properly
+    router.replace('/' as any);
+  };
+
+  // Fetch warehouses for switching
+  const { data: warehousesData } = useQuery({
+    queryKey: ['warehouses', 'switch'],
+    queryFn: async () => {
+      const res = await api.get('/warehouses?includeInactive=false');
+      return res.data.data;
+    },
+  });
+
+  const allWarehouses: Warehouse[] = warehousesData || [];
+  
+  // Filter warehouses based on mode and assigned warehouses
+  // For now, we show all active warehouses, but filter by type based on mode
+  // Later, we can filter by assigned warehouses when API supports it
+  const availableWarehouses = allWarehouses.filter((w: Warehouse) => {
+    if (!w.isActive) return false;
+    // In sell mode, only show BOUTIQUE warehouses
+    if (mode === 'sell') {
+      return w.type === 'BOUTIQUE' || !w.type;
+    }
+    // In manage mode, show all warehouses
+    return true;
+  });
+
+  const handleWarehouseSwitch = () => {
+    setSelectedWarehouseId(currentWarehouse?.id || null);
+    setShowWarehouseModal(true);
+  };
+
+  const handleWarehouseSelect = (warehouse: Warehouse) => {
+    setSelectedWarehouseId(warehouse.id);
+  };
+
+  const handleWarehouseConfirm = async () => {
+    if (!selectedWarehouseId) return;
+    
+    const selectedWarehouse = availableWarehouses.find((w: Warehouse) => w.id === selectedWarehouseId);
+    if (!selectedWarehouse) return;
+    
+    // Check if switching to STOCKAGE in sell mode
+    if (mode === 'sell' && selectedWarehouse.type === 'STOCKAGE') {
+      Alert.alert(
+        'Changement impossible',
+        'Vous ne pouvez pas vous connecter à un entrepôt de type Stockage en mode Vente. Veuillez passer en mode Gestion pour gérer les entrepôts Stockage.'
+      );
+      return;
+    }
+    
+    await setSelectedWarehouse(selectedWarehouse);
+    hapticNotification(Haptics.NotificationFeedbackType.Success);
+    setShowWarehouseModal(false);
+    Alert.alert('Succès', `Entrepôt changé vers ${selectedWarehouse.name}`, [
+      { text: 'OK', onPress: () => router.replace('/' as any) }
+    ]);
   };
 
   const handleLogout = () => {
@@ -110,9 +186,6 @@ export default function MoreScreen() {
     ]);
   };
 
-  const canViewExpenses = hasPermission('expenses:view');
-  const canCreateExpenses = hasPermission('expenses:create');
-
   const menuItems = [
     {
       id: 'inventory',
@@ -121,13 +194,6 @@ export default function MoreScreen() {
       subtitle: 'Voir les niveaux de stock',
       onPress: () => router.push('/(app)/inventory'),
     },
-    ...(canViewExpenses ? [{
-      id: 'expenses',
-      icon: 'wallet-outline',
-      title: 'Dépenses',
-      subtitle: 'Gérer les dépenses de l\'entrepôt',
-      onPress: () => router.push('/(app)/expenses'),
-    }] : []),
     {
       id: 'returns',
       icon: 'arrow-undo-outline',
@@ -143,13 +209,6 @@ export default function MoreScreen() {
       onPress: () => router.push('/(app)/sales'),
     },
     {
-      id: 'reports',
-      icon: 'bar-chart-outline',
-      title: 'Rapports',
-      subtitle: 'Résumé des ventes et bénéfices',
-      onPress: () => router.push('/(app)/reports'),
-    },
-    {
       id: 'customers',
       icon: 'people-outline',
       title: 'Clients',
@@ -160,51 +219,59 @@ export default function MoreScreen() {
 
   // Management items (permission-based)
   const managementItems = [
-    ...(canManageProducts
+    ...(hasPermission('employees:manage') || hasPermission('employees:view')
       ? [
           {
-            id: 'add-product',
-            icon: 'add-circle-outline',
-            title: 'Ajouter un produit',
-            subtitle: 'Créer un nouveau produit',
-            onPress: () => router.push('/(app)/products-manage'),
+            id: 'staff-management',
+            icon: 'people-outline',
+            title: 'Gestion du personnel',
+            subtitle: 'Employés, rôles et permissions',
+            onPress: () => router.push('/(app)/staff-management'),
           },
         ]
       : []),
-    ...(canManageCategories
+    ...(hasPermission('inventory:view') || hasPermission('inventory:manage')
       ? [
           {
-            id: 'add-category',
-            icon: 'folder-open-outline',
-            title: 'Ajouter une catégorie',
-            subtitle: 'Créer une nouvelle catégorie',
-            onPress: () => router.push('/(app)/categories-manage'),
-          },
-        ]
-      : []),
-    ...(canManageProducts
-      ? [
-          {
-            id: 'manage-products',
-            icon: 'pricetags-outline',
-            title: 'Gérer les produits',
-            subtitle: 'Modifier ou supprimer des produits',
-            onPress: () => router.push('/(app)/products-list'),
-          },
-        ]
-      : []),
-    ...(canManageCategories
-      ? [
-          {
-            id: 'manage-categories',
-            icon: 'albums-outline',
-            title: 'Gérer les catégories',
-            subtitle: 'Modifier ou supprimer des catégories',
-            onPress: () => router.push('/(app)/categories-list'),
+            id: 'transfer-requests',
+            icon: 'swap-horizontal-outline',
+            title: 'Demandes de transfert',
+            subtitle: 'Voir et approuver les transferts',
+            onPress: () => router.push('/(app)/transfer-requests-list'),
           },
         ]
       : []),
   ];
+
+  // Finance items (permission-based)
+  const financeItems = [
+    ...(hasPermission('expenses:view') || hasPermission('expenses:create')
+      ? [
+          {
+            id: 'expenses',
+            icon: 'wallet-outline',
+            title: 'Dépenses',
+            subtitle: 'Gérer les dépenses',
+            onPress: () => router.push('/(app)/expenses-list'),
+          },
+        ]
+      : []),
+    ...(hasPermission('expenses:view')
+      ? [
+          {
+            id: 'financial-reports',
+            icon: 'bar-chart-outline',
+            title: 'Rapports financiers',
+            subtitle: 'Ventes, dépenses et bénéfices',
+            onPress: () => router.push('/(app)/reports-financial'),
+          },
+        ]
+      : []),
+  ];
+
+  // Only show management items in manage mode
+  const showManagementSection = mode === 'manage' && managementItems.length > 0;
+  const showFinanceSection = mode === 'manage' && financeItems.length > 0;
 
   const settingsItems = [
     {
@@ -220,6 +287,14 @@ export default function MoreScreen() {
       title: 'Format du reçu',
       subtitle: 'Personnaliser le reçu',
       onPress: () => router.push('/(app)/settings-receipt'),
+    },
+    {
+      id: 'loyalty',
+      icon: 'star-outline',
+      title: 'Points de fidélité',
+      subtitle: 'Taux d\'attribution et conversion',
+      onPress: () => router.push('/(app)/settings-loyalty'),
+      requiresAdmin: true,
     },
     {
       id: 'format',
@@ -278,6 +353,16 @@ export default function MoreScreen() {
             <Text style={styles.profileName}>{employee?.fullName}</Text>
             <Text style={styles.profileRole}>{employee?.role.name}</Text>
             <Text style={styles.profileEmail}>{employee?.phone || employee?.email}</Text>
+            {currentWarehouse && (
+              <TouchableOpacity
+                style={styles.warehouseBadge}
+                onPress={handleWarehouseSwitch}
+              >
+                <Ionicons name="storefront" size={14} color={colors.primary} />
+                <Text style={styles.warehouseBadgeText}>{currentWarehouse.name}</Text>
+                <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -328,24 +413,46 @@ export default function MoreScreen() {
         )}
 
         {/* Warehouse Info */}
-        {employee?.warehouse && (
-          <View style={styles.shiftStatus}>
+        {currentWarehouse && (
+          <TouchableOpacity
+            style={styles.shiftStatus}
+            onPress={handleWarehouseSwitch}
+          >
             <View style={styles.shiftStatusIcon}>
               <Ionicons
-                name="business-outline"
+                name={(currentWarehouse.type === 'BOUTIQUE' || !currentWarehouse.type) ? 'storefront' : 'archive'}
                 size={24}
                 color={colors.primary}
               />
             </View>
             <View style={styles.shiftStatusInfo}>
-              <Text style={styles.shiftStatusTitle}>
-                {employee.warehouse.name}
-              </Text>
+              <View style={styles.warehouseTitleRow}>
+                <Text style={styles.shiftStatusTitle}>
+                  {currentWarehouse.name}
+                </Text>
+                {currentWarehouse.type && (
+                  <View style={[
+                    styles.warehouseTypeBadge,
+                    currentWarehouse.type === 'BOUTIQUE' ? styles.warehouseTypeBadgeBoutique : styles.warehouseTypeBadgeStockage
+                  ]}>
+                    <Text style={[
+                      styles.warehouseTypeBadgeText,
+                      currentWarehouse.type === 'BOUTIQUE' ? styles.warehouseTypeBadgeTextBoutique : styles.warehouseTypeBadgeTextStockage
+                    ]}>
+                      {currentWarehouse.type === 'BOUTIQUE' ? 'Boutique' : 'Stockage'}
+                    </Text>
+                  </View>
+                )}
+              </View>
               <Text style={styles.shiftStatusSubtitle}>
-                Code: {employee.warehouse.code}
+                Code: {currentWarehouse.code}
+              </Text>
+              <Text style={styles.warehouseSwitchHint}>
+                Appuyer pour changer d'entrepôt
               </Text>
             </View>
-          </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+          </TouchableOpacity>
         )}
 
         {/* Sync Status */}
@@ -393,6 +500,52 @@ export default function MoreScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Management Items - only in manage mode */}
+        {showManagementSection && (
+          <View style={styles.menuSection}>
+            <Text style={styles.sectionTitle}>📊 Gestion</Text>
+            {managementItems.map((item) => (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.menuItem}
+                onPress={item.onPress}
+              >
+                <View style={styles.menuItemIcon}>
+                  <Ionicons name={item.icon as any} size={24} color={colors.success} />
+                </View>
+                <View style={styles.menuItemInfo}>
+                  <Text style={styles.menuItemTitle}>{item.title}</Text>
+                  <Text style={styles.menuItemSubtitle}>{item.subtitle}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {/* Finance Items - only in manage mode */}
+        {showFinanceSection && (
+          <View style={styles.menuSection}>
+            <Text style={styles.sectionTitle}>💰 Finance</Text>
+            {financeItems.map((item) => (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.menuItem}
+                onPress={item.onPress}
+              >
+                <View style={styles.menuItemIcon}>
+                  <Ionicons name={item.icon as any} size={24} color={colors.warning} />
+                </View>
+                <View style={styles.menuItemInfo}>
+                  <Text style={styles.menuItemTitle}>{item.title}</Text>
+                  <Text style={styles.menuItemSubtitle}>{item.subtitle}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {/* Quick Actions - only in sell mode */}
         {!isSettingsMode && (
           <View style={styles.menuSection}>
@@ -419,7 +572,15 @@ export default function MoreScreen() {
         {/* Settings Items */}
         <View style={styles.menuSection}>
           <Text style={styles.sectionTitle}>⚙️ Paramètres</Text>
-          {settingsItems.map((item) => (
+          {settingsItems
+            .filter((item) => {
+              // Filter out admin-only items if user is not admin
+              if (item.requiresAdmin && employee?.role?.name !== 'admin') {
+                return false;
+              }
+              return true;
+            })
+            .map((item) => (
             <TouchableOpacity
               key={item.id}
               style={styles.menuItem}
@@ -466,10 +627,127 @@ export default function MoreScreen() {
         </TouchableOpacity>
 
         <Text style={styles.versionText}>Version 1.0.0</Text>
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
+        </ScrollView>
+
+        {/* Warehouse Selection Modal */}
+        <Modal
+          visible={showWarehouseModal}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setShowWarehouseModal(false)}
+        >
+          <SafeAreaView style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Changer d'entrepôt</Text>
+                <Text style={styles.modalSubtitle}>
+                  {mode === 'manage' 
+                    ? 'Mode Gestion : Tous les entrepôts disponibles'
+                    : 'Mode Vente : Seuls les entrepôts Boutique sont disponibles'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => setShowWarehouseModal(false)}
+              >
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={availableWarehouses}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.warehouseList}
+              renderItem={({ item }) => {
+                const isBoutique = item.type === 'BOUTIQUE' || !item.type;
+                const isStockage = item.type === 'STOCKAGE';
+                const isSelected = selectedWarehouseId === item.id;
+                const isCurrent = currentWarehouse?.id === item.id;
+                
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.warehouseItem,
+                      isSelected && styles.warehouseItemSelected,
+                      isCurrent && styles.warehouseItemCurrent,
+                    ]}
+                    onPress={() => handleWarehouseSelect(item)}
+                  >
+                    <View style={[
+                      styles.warehouseIcon,
+                      isSelected && styles.warehouseIconSelected,
+                    ]}>
+                      <Ionicons
+                        name={isBoutique ? 'storefront' : 'archive'}
+                        size={24}
+                        color={isSelected ? colors.textInverse : (isBoutique ? colors.primary : colors.success)}
+                      />
+                    </View>
+                    <View style={styles.warehouseInfo}>
+                      <View style={styles.warehouseTitleRow}>
+                        <Text style={[
+                          styles.warehouseName,
+                          isSelected && styles.warehouseNameSelected,
+                        ]}>
+                          {item.name}
+                        </Text>
+                        {isCurrent && (
+                          <View style={styles.currentBadge}>
+                            <Text style={styles.currentBadgeText}>Actuel</Text>
+                          </View>
+                        )}
+                        {(isBoutique || isStockage) && (
+                          <View style={[
+                            styles.warehouseTypeBadge,
+                            isBoutique ? styles.warehouseTypeBadgeBoutique : styles.warehouseTypeBadgeStockage
+                          ]}>
+                            <Text style={[
+                              styles.warehouseTypeBadgeText,
+                              isBoutique ? styles.warehouseTypeBadgeTextBoutique : styles.warehouseTypeBadgeTextStockage
+                            ]}>
+                              {isBoutique ? 'Boutique' : 'Stockage'}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.warehouseCode}>Code: {item.code}</Text>
+                    </View>
+                    {isSelected && (
+                      <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.emptyState}>
+                  <Ionicons name="business-outline" size={48} color={colors.textMuted} />
+                  <Text style={styles.emptyStateText}>
+                    {mode === 'sell' 
+                      ? 'Aucun entrepôt Boutique disponible'
+                      : 'Aucun entrepôt disponible'}
+                  </Text>
+                </View>
+              }
+            />
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={[
+                  styles.confirmButton,
+                  !selectedWarehouseId && styles.confirmButtonDisabled,
+                ]}
+                onPress={handleWarehouseConfirm}
+                disabled={!selectedWarehouseId}
+              >
+                <Text style={styles.confirmButtonText}>Confirmer</Text>
+                <Ionicons name="arrow-forward" size={20} color={colors.textInverse} />
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+        </Modal>
+      </SafeAreaView>
+    );
+  }
 
 const styles = StyleSheet.create({
   container: {
@@ -626,6 +904,12 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: spacing.md,
   },
+  warehouseTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
   shiftStatusTitle: {
     fontSize: fontSize.md,
     fontWeight: '600',
@@ -635,6 +919,172 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
     color: colors.textMuted,
     marginTop: 2,
+  },
+  warehouseSwitchHint: {
+    fontSize: fontSize.xs,
+    color: colors.primary,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  warehouseBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+    paddingVertical: spacing.xs,
+  },
+  warehouseBadgeText: {
+    fontSize: fontSize.sm,
+    color: colors.primary,
+    fontWeight: '500',
+  },
+  warehouseTypeBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  warehouseTypeBadgeBoutique: {
+    backgroundColor: colors.primaryLight + '20',
+  },
+  warehouseTypeBadgeStockage: {
+    backgroundColor: colors.successLight + '20',
+  },
+  warehouseTypeBadgeText: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  warehouseTypeBadgeTextBoutique: {
+    color: colors.primary,
+  },
+  warehouseTypeBadgeTextStockage: {
+    color: colors.success,
+  },
+  currentBadge: {
+    backgroundColor: colors.primaryLight + '20',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  currentBadgeText: {
+    fontSize: fontSize.xs,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  // Modal styles
+  modalContainer: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    padding: spacing.xl,
+    paddingTop: 60,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: {
+    fontSize: fontSize.xxl,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  modalSubtitle: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+  },
+  modalCloseButton: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  warehouseList: {
+    padding: spacing.lg,
+  },
+  warehouseItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.lg,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    marginBottom: spacing.md,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    ...shadows.sm,
+  },
+  warehouseItemSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight + '10',
+  },
+  warehouseItemCurrent: {
+    borderColor: colors.success,
+    borderWidth: 2,
+  },
+  warehouseIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: colors.surfaceSecondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  warehouseIconSelected: {
+    backgroundColor: colors.primary,
+  },
+  warehouseInfo: {
+    flex: 1,
+    marginLeft: spacing.md,
+  },
+  warehouseName: {
+    fontSize: fontSize.lg,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  warehouseNameSelected: {
+    color: colors.primary,
+  },
+  warehouseCode: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  modalFooter: {
+    padding: spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  confirmButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.lg,
+    ...shadows.md,
+  },
+  confirmButtonDisabled: {
+    opacity: 0.5,
+  },
+  confirmButtonText: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.textInverse,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
+  },
+  emptyStateText: {
+    fontSize: fontSize.md,
+    color: colors.textMuted,
+    marginTop: spacing.md,
+    textAlign: 'center',
   },
   syncStatus: {
     flexDirection: 'row',
