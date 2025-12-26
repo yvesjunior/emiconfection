@@ -278,6 +278,12 @@ Créer l'employé ✅
 - Vérification quantité déjà dans panier
 - Alerte stock faible si ≤ 5 unités restantes
 
+**Affichage dans l'écran Inventaire :**
+- Conversion automatique des quantités (Decimal → Number)
+- Affichage de l'unité du produit si disponible
+- Validation des valeurs pour éviter "NaN"
+- Affichage cohérent même pour produits sans inventaire (0 stock)
+
 ## Gestion des Clients
 
 ### Caractéristiques
@@ -458,6 +464,23 @@ Tous les rapports financiers peuvent être visualisés par période :
 
 ---
 
+## Authentification
+
+### Système d'Authentification Simplifié
+- **Identifiant** : Numéro de téléphone (champ `login`)
+- **Mot de passe** : PIN à 4 chiffres minimum (champ `password`)
+- **Champs supprimés** : Email et Password séparé (non utilisés)
+- **Validation simultanée** : Le téléphone et le PIN sont validés ensemble lors de la connexion
+
+### Champs Employé
+- ✅ Nom complet
+- ✅ Téléphone (unique, utilisé pour login)
+- ✅ PIN (hashé avec bcrypt)
+- ✅ Rôle
+- ✅ Assignation(s) d'entrepôt(s) (multiple)
+- ❌ Email (supprimé)
+- ❌ Password (supprimé)
+
 ## Gestion du Personnel - Hiérarchie
 
 ### Manager
@@ -466,6 +489,10 @@ Tous les rapports financiers peuvent être visualisés par période :
 - ✅ Créer, modifier, désactiver des Sellers pour ses entrepôts
 - ✅ Réinitialiser les PIN des Sellers de ses entrepôts
 - ✅ Voir les employés (Sellers) de ses entrepôts assignés
+- ✅ Voir uniquement lui-même et les Sellers de ses entrepôts assignés (filtrage automatique)
+- ✅ Créer des produits (permission `products:create`)
+- ✅ Modifier des produits (permission `products:update`)
+- ✅ Gérer les finances de ses entrepôts (permissions `expenses:view`, `expenses:create`)
 
 **Ne peut pas gérer :**
 - ❌ Les Managers (réservé à Admin)
@@ -478,7 +505,7 @@ Tous les rapports financiers peuvent être visualisés par période :
 - ✅ Le staff en dessous (tous les Sellers de tous les entrepôts)
 - ✅ Tous les employés sans restriction
 - ✅ Les rôles et permissions
-- ✅ L'assignation des Managers aux entrepôts
+- ✅ L'assignation des Managers aux entrepôts (assignation multiple)
 
 **Scope :**
 - Accès complet à tous les employés du système
@@ -572,3 +599,130 @@ Si accumulation :
 - Staff peut appliquer une remise de 5000 FCFA (5000 points)
 - OU laisser le client accumuler de nouveaux points sur cet achat
 
+## Gestion des Produits
+
+### Champs Produit
+
+**Champs Requis :**
+- Nom (minimum 2 caractères)
+- SKU (unique)
+- Prix de vente (doit être positif)
+
+**Champs Optionnels :**
+- Code-barres (peut être scanné)
+- Description
+- Prix d'achat
+- Frais de transport
+- **Unité** : Liste prédéfinie d'unités (valeur par défaut : "piece")
+  - Options : Pièce, kg, g, Litre, mL, Mètre, cm, m², m³, Boîte, Paquet, Carton, Unité
+- Niveau de stock minimum (défaut : 5)
+- Image
+- Catégories (au moins une requise)
+
+### Unité de Produit
+
+**Liste d'Unités Disponibles :**
+- Pièce (défaut)
+- Kilogramme (kg)
+- Gramme (g)
+- Litre (L)
+- Millilitre (mL)
+- Mètre (m)
+- Centimètre (cm)
+- Mètre carré (m²)
+- Mètre cube (m³)
+- Boîte
+- Paquet
+- Carton
+- Unité
+
+**Interface :**
+- Sélection via modal avec liste déroulante
+- Affichage du libellé complet (ex: "Kilogramme (kg)")
+- Standardisation pour cohérence des données
+
+## Changement d'Entrepôt
+
+### Comportement Automatique
+- **Vidage du panier** : Lors du changement d'entrepôt, le panier est automatiquement vidé
+- **Raison** : Éviter les ventes avec des produits d'un entrepôt différent
+- **Filtrage des ventes** : Les listes de ventes sont automatiquement filtrées par l'entrepôt connecté
+- **Filtrage des rapports** : Les rapports financiers sont automatiquement filtrés par l'entrepôt connecté
+
+### Restrictions
+- **Mode Vente** : Les entrepôts STOCKAGE ne sont pas affichés dans la liste de sélection
+- **Mode Gestion** : Tous les entrepôts assignés sont disponibles
+
+## Validation du Stock dans le Panier
+
+### Vérifications Implémentées
+1. **Lors de la modification de quantité** :
+   - Vérification immédiate du stock disponible
+   - Blocage si quantité > stock disponible
+   - Message d'erreur avec stock disponible et quantité demandée
+
+2. **Avant le checkout** :
+   - Vérification complète de tous les articles du panier
+   - Liste des articles avec stock insuffisant si problème
+   - Blocage du checkout jusqu'à résolution
+
+3. **Mise à jour automatique** :
+   - Après validation d'une vente, le stock est automatiquement décrémenté
+   - Rafraîchissement automatique des données de produits et inventaire
+
+## Modes de Paiement
+
+### Disponibles
+- ✅ Espèces (cash)
+- ✅ Mobile Money
+
+### Supprimés
+- ❌ Carte bancaire (supprimé)
+- ❌ Virement bancaire / Crédit (supprimé)
+
+**Note :** Le système accepte uniquement les paiements en espèces et par Mobile Money.
+
+## Affichage du Nom d'Entrepôt
+
+### Emplacements
+- **Écran principal** : Sous le message "Bonjour" avec icône `storefront`
+- **Écran Panier** : Barre en haut avec icône et nom
+- **Écran Ventes** : Barre en haut avec icône et nom
+
+### Style
+- Couleur : Primaire (bleu)
+- Taille : Moyenne (fontSize.md)
+- Icône : `storefront` (18px)
+- Position : Centré dans une barre dédiée
+
+## Principes de Gestion des Données
+
+### Standardisation des Unités
+- **Liste prédéfinie** : 13 unités standardisées disponibles
+- **Valeur par défaut** : "piece" si non spécifiée
+- **Interface** : Sélection via modal avec libellés complets
+- **Cohérence** : Évite les variations d'écriture
+
+### Gestion des Valeurs Numériques
+- **Conversion automatique** : Decimal (Prisma) → Number pour affichage
+- **Validation** : Toutes les valeurs validées pour éviter "NaN"
+- **Valeurs par défaut** : Stock = 0, minStockLevel = 5 si non spécifiés
+
+### Modes de Paiement Simplifiés
+- **Deux modes uniquement** : Espèces et Mobile Money
+- **Suppression** : Carte bancaire et Virement bancaire/Crédit supprimés
+
+### Filtrage par Entrepôt
+- **Principe fondamental** : Toutes les données filtrées par entrepôt connecté
+- **Ventes** : Filtrées par entrepôt
+- **Rapports** : Filtrés par entrepôt
+- **Produits** : Quantités affichées selon entrepôt connecté
+
+### Vidage Automatique du Panier
+- **Principe** : Panier vidé automatiquement lors du changement d'entrepôt
+- **Raison** : Éviter les ventes avec produits d'un entrepôt différent
+
+---
+
+**Dernière mise à jour :** 2024-12-26
+**Version :** 1.2

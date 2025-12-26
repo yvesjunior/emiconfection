@@ -11,18 +11,26 @@ router.use(authenticate);
 
 // GET /api/products - List products (scoped by warehouse)
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
-  const warehouseId = getWarehouseScope(req);
   const query = { ...req.query as any };
-  if (warehouseId) {
-    query.warehouseId = warehouseId;
+  
+  // CRITICAL: Prioritize query param warehouseId (from frontend) over getWarehouseScope
+  // This ensures the frontend can explicitly request products for a specific warehouse
+  if (!query.warehouseId) {
+    const warehouseId = getWarehouseScope(req);
+    if (warehouseId) {
+      query.warehouseId = warehouseId;
+    }
   }
+  
   const result = await productsService.getProducts(query);
   res.json({ success: true, ...result });
 });
 
 // GET /api/products/barcode/:barcode - Get product by barcode
+// Supports warehouseId query param to filter inventory by warehouse
 router.get('/barcode/:barcode', async (req: AuthenticatedRequest, res: Response) => {
-  const result = await productsService.getProductByBarcode(req.params.barcode);
+  const warehouseId = req.query.warehouseId as string | undefined;
+  const result = await productsService.getProductByBarcode(req.params.barcode, warehouseId);
   res.json({ success: true, data: result });
 });
 
@@ -32,23 +40,22 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
   res.json({ success: true, data: result });
 });
 
-// POST /api/products - Create product (uses selected warehouse)
+// POST /api/products - Create product (global, warehouse optional for initial stock)
 router.post('/', requirePermission(PERMISSIONS.PRODUCTS_CREATE), async (req: AuthenticatedRequest, res: Response) => {
-  // Use selected warehouse or employee's assigned warehouse
-  req.body.warehouseId = getWarehouseForCreate(req);
+  // Product creation is global - warehouseId is optional
+  // If warehouseId is provided with stock, it will be validated for access
+  // If not provided, product is created without initial stock (available globally with 0 stock)
   const input = createProductSchema.parse(req.body);
-  const result = await productsService.createProduct(input);
+  const result = await productsService.createProduct(input, req.employee!.id);
   res.status(201).json({ success: true, data: result });
 });
 
 // PUT /api/products/:id - Update product
 router.put('/:id', requirePermission(PERMISSIONS.PRODUCTS_UPDATE), async (req: AuthenticatedRequest, res: Response) => {
-  // Use selected warehouse or employee's assigned warehouse if not specified
-  if (!req.body.warehouseId) {
-    req.body.warehouseId = getWarehouseForCreate(req);
-  }
+  // Product update is global - warehouseId is optional for stock updates
+  // If warehouseId is provided with stock, it will be validated for access
   const input = updateProductSchema.parse(req.body);
-  const result = await productsService.updateProduct(req.params.id, input);
+  const result = await productsService.updateProduct(req.params.id, input, req.employee!.id);
   res.json({ success: true, data: result });
 });
 

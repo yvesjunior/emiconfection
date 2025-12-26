@@ -5,6 +5,7 @@
   "description": "POS System Backend API",
   "main": "dist/index.js",
   "scripts": {
+    "export:db": "tsx scripts/export-database.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
@@ -13,7 +14,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "update:manager-perms": "tsx scripts/update-manager-permissions.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

@@ -36,7 +36,7 @@ interface CustomerSale {
 export default function CustomerManageScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const { id, from } = useLocalSearchParams<{ id?: string; from?: string }>();
   const isEditing = !!id;
   const hasPermission = useAuthStore((state) => state.hasPermission);
 
@@ -92,9 +92,16 @@ export default function CustomerManageScreen() {
     onSuccess: () => {
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      Alert.alert('Succès', 'Client créé avec succès', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
+      // Navigate back to the appropriate screen
+      const targetScreen = from === 'cart' ? '/(app)/cart' : from === 'customers' ? '/(app)/customers' : undefined;
+      if (targetScreen) {
+        router.replace(targetScreen as any);
+      } else if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(app)/customers');
+      }
+      Alert.alert('Succès', 'Client créé avec succès');
     },
     onError: (error: any) => {
       hapticNotification(Haptics.NotificationFeedbackType.Error);
@@ -112,9 +119,16 @@ export default function CustomerManageScreen() {
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['customer', id] });
-      Alert.alert('Succès', 'Client mis à jour', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
+      // Navigate back to the appropriate screen
+      const targetScreen = from === 'cart' ? '/(app)/cart' : from === 'customers' ? '/(app)/customers' : undefined;
+      if (targetScreen) {
+        router.replace(targetScreen as any);
+      } else if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(app)/customers');
+      }
+      Alert.alert('Succès', 'Client mis à jour');
     },
     onError: (error: any) => {
       hapticNotification(Haptics.NotificationFeedbackType.Error);
@@ -131,7 +145,15 @@ export default function CustomerManageScreen() {
     onSuccess: () => {
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      router.back();
+      // Navigate back to the appropriate screen
+      const targetScreen = from === 'cart' ? '/(app)/cart' : from === 'customers' ? '/(app)/customers' : undefined;
+      if (targetScreen) {
+        router.replace(targetScreen as any);
+      } else if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(app)/customers');
+      }
     },
     onError: (error: any) => {
       hapticNotification(Haptics.NotificationFeedbackType.Error);
@@ -218,7 +240,17 @@ export default function CustomerManageScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          // Navigate back to the appropriate screen
+          const targetScreen = from === 'cart' ? '/(app)/cart' : from === 'customers' ? '/(app)/customers' : undefined;
+          if (targetScreen) {
+            router.replace(targetScreen as any);
+          } else if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(app)/customers');
+          }
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>

@@ -51,21 +51,20 @@ model RolePermission {
 
 model Employee {
   id          String    @id @default(uuid())
-  email       String?   // Optional email
-  password    String    // Hashed password for admin login
   pinCode     String?   @map("pin_code") // Hashed PIN for mobile POS login
   fullName    String    @map("full_name")
   phone       String    @unique // Required phone for login
   avatarUrl   String?   @map("avatar_url")
   roleId      String    @map("role_id")
-  warehouseId String?   @map("warehouse_id")
+  warehouseId String?   @map("warehouse_id") // Default/primary warehouse (for backward compatibility)
   isActive    Boolean   @default(true) @map("is_active")
   lastLogin   DateTime? @map("last_login")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  role      Role       @relation(fields: [roleId], references: [id])
-  warehouse Warehouse? @relation(fields: [warehouseId], references: [id])
+  role       Role              @relation(fields: [roleId], references: [id])
+  warehouse  Warehouse?        @relation("EmployeePrimaryWarehouse", fields: [warehouseId], references: [id])
+  warehouses EmployeeWarehouse[] // Many-to-many relationship for multiple warehouse assignments
 
   shifts                Shift[]
   sales                 Sale[]
@@ -76,6 +75,19 @@ model Employee {
   transferApprovals     StockTransferRequest[] @relation("TransferApprover")
 
   @@map("employees")
+}
+
+model EmployeeWarehouse {
+  id          String   @id @default(uuid())
+  employeeId  String   @map("employee_id")
+  warehouseId String   @map("warehouse_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  employee  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, warehouseId])
+  @@map("employee_warehouses")
 }
 
 // ============================================
@@ -159,7 +171,8 @@ model Warehouse {
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
-  employees            Employee[]
+  employees            Employee[]            @relation("EmployeePrimaryWarehouse")
+  employeeWarehouses   EmployeeWarehouse[]   // Many-to-many relationship
   inventory            Inventory[]
   stockMovements       StockMovement[]
   shifts               Shift[]
@@ -326,7 +339,7 @@ model SaleItem {
 model Payment {
   id             String   @id @default(uuid())
   saleId         String   @map("sale_id")
-  method         String   // cash, card, mobile_money, credit
+  method         String   // cash, mobile_money
   amount         Decimal  @db.Decimal(10, 2)
   amountReceived Decimal? @map("amount_received") @db.Decimal(10, 2)
   changeGiven    Decimal? @map("change_given") @db.Decimal(10, 2)

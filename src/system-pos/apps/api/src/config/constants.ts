@@ -68,9 +68,7 @@ export const PERMISSIONS = {
 
 export const PAYMENT_METHODS = {
   CASH: 'cash',
-  CARD: 'card',
   MOBILE_MONEY: 'mobile_money',
-  CREDIT: 'credit',
 } as const;
 
 export const SALE_STATUS = {

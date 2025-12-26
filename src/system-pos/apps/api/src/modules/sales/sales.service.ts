@@ -154,20 +154,37 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
 
   const productMap = new Map(products.map((p) => [p.id, p]));
 
-  // Check stock availability
+  // CRITICAL: Check stock availability for the SPECIFIC warehouse
+  // This ensures products and quantities are managed correctly per warehouse
   for (const item of input.items) {
+    const product = productMap.get(item.productId);
+    if (!product) {
+      throw ApiError.badRequest(`Product not found for item: ${item.productId}`);
+    }
+
+    // Verify inventory exists for this specific warehouse
     const inventory = await prisma.inventory.findUnique({
       where: {
         productId_warehouseId: {
           productId: item.productId,
-          warehouseId: warehouseId,
+          warehouseId: warehouseId, // Use the warehouse from input/employee
         },
       },
     });
 
-    if (!inventory || Number(inventory.quantity) < item.quantity) {
-      const product = productMap.get(item.productId);
-      throw ApiError.badRequest(`Insufficient stock for product: ${product?.name}`);
+    if (!inventory) {
+      throw ApiError.badRequest(
+        `Product "${product.name}" (SKU: ${product.sku}) is not available in warehouse "${warehouse.name}" (${warehouse.code}). Please check inventory.`
+      );
+    }
+
+    const availableQuantity = Number(inventory.quantity);
+    const requestedQuantity = item.quantity;
+
+    if (availableQuantity < requestedQuantity) {
+      throw ApiError.badRequest(
+        `Insufficient stock for "${product.name}" in warehouse "${warehouse.name}". Available: ${availableQuantity}, Requested: ${requestedQuantity}`
+      );
     }
   }
 
@@ -309,7 +326,24 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
 
     // Update inventory
     for (const item of input.items) {
-      await tx.inventory.update({
+      // Verify inventory entry exists before updating
+      const inventoryEntry = await tx.inventory.findUnique({
+        where: {
+          productId_warehouseId: {
+            productId: item.productId,
+            warehouseId: warehouseId,
+          },
+        },
+      });
+
+      if (!inventoryEntry) {
+        throw ApiError.badRequest(
+          `Inventory entry not found for product ${productMap.get(item.productId)?.name} in warehouse ${warehouse.name}`
+        );
+      }
+
+      // Update inventory quantity
+      const updatedInventory = await tx.inventory.update({
         where: {
           productId_warehouseId: {
             productId: item.productId,
@@ -320,6 +354,13 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
           quantity: { decrement: item.quantity },
         },
       });
+
+      // Verify the update was successful and quantity is not negative
+      if (Number(updatedInventory.quantity) < 0) {
+        throw ApiError.badRequest(
+          `Stock would become negative for product ${productMap.get(item.productId)?.name}. Current stock: ${Number(inventoryEntry.quantity)}, Requested: ${item.quantity}`
+        );
+      }
 
       // Create stock movement
       await tx.stockMovement.create({

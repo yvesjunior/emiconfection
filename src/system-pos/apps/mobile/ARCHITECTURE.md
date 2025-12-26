@@ -147,14 +147,19 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 ### 1. Connexion (Login)
 
 **Processus :**
-1. L'utilisateur entre son numéro de téléphone et son PIN
+1. L'utilisateur entre son numéro de téléphone (champ `login`) et son PIN (champ `password`)
+   - **Authentification simplifiée** : Un seul système d'authentification avec téléphone/PIN
+   - Pas de champ `email` ou `password` séparé - uniquement téléphone et PIN
 2. Sélection du mode d'utilisation :
    - **Mode Vente (Sell)** : Pour les opérations de vente
    - **Mode Gestion (Manage)** : Pour les opérations de gestion
+   - **Sécurité** : Les Sellers ne peuvent pas accéder au mode Gestion (bloqué automatiquement)
 3. Sélection de l'entrepôt :
    - **Mode Vente** : Seuls les entrepôts de type Boutique sont disponibles
    - **Mode Gestion** : Tous les entrepôts assignés à l'utilisateur sont disponibles
+   - **Filtrage automatique** : Les entrepôts STOCKAGE ne sont pas listés en mode Vente
 4. Vérification des permissions selon le rôle
+5. **Vidage automatique du panier** : Lors du changement d'entrepôt, le panier est automatiquement vidé
 
 **Règles de sélection d'entrepôt :**
 - **Mode Vente** : Seuls les entrepôts de type `BOUTIQUE` sont disponibles (filtrage automatique)
@@ -239,6 +244,10 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 - **Qui peut créer :** Manager, Admin
 - **Qui peut modifier :** Manager, Admin
 - **Stock initial :** Défini lors de la création pour l'entrepôt connecté
+- **Champ Unité :** Liste prédéfinie d'unités disponibles (Pièce, kg, g, Litre, mL, Mètre, cm, m², m³, Boîte, Paquet, Carton, Unité)
+  - Sélection via un modal avec liste d'unités
+  - Valeur par défaut : "piece"
+  - Standardisation des unités pour cohérence des données
 
 ### Suppression
 - **Soft Delete (Désactivation) :** Manager, Admin
@@ -417,19 +426,27 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 
 **Champs requis :**
 - Nom complet
-- Téléphone (unique)
+- Téléphone (unique) - utilisé comme identifiant de connexion
 - Rôle (Admin, Manager, ou Seller)
-- Entrepôt (requis sauf pour Admin)
-- Mot de passe
-- PIN (optionnel mais recommandé)
+- Entrepôt(s) (assignation multiple possible) :
+  - **Admin** : Entrepôt(s) optionnel(s) - peut fonctionner sans entrepôt assigné
+  - **Manager** : Au moins un entrepôt requis (peut être assigné à plusieurs)
+  - **Seller** : Au moins un entrepôt Boutique requis (peut être assigné à plusieurs Boutiques)
+- PIN (requis) - utilisé pour l'authentification mobile
+
+**Champs supprimés :**
+- ❌ Email (supprimé - non utilisé)
+- ❌ Password (supprimé - seul PIN utilisé pour l'authentification)
 
 **Règles de validation :**
-- Un entrepôt est **requis** pour les rôles Manager et Seller
+- **Assignation multiple** : Tous les employés peuvent être assignés à plusieurs entrepôts
+- Un entrepôt est **requis** pour les rôles Manager et Seller (au moins un)
 - Un entrepôt est **optionnel** pour le rôle Admin
-- Seller ne peut être assigné qu'à des entrepôts de type Boutique
-- Manager peut être assigné à des entrepôts Boutique ou Stockage
+- Seller ne peut être assigné qu'à des entrepôts de type Boutique (un ou plusieurs)
+- Manager peut être assigné à des entrepôts Boutique ou Stockage (un ou plusieurs)
 - **Manager ne peut créer que des Sellers** assignés à ses entrepôts
 - **Admin peut créer des Managers et des Sellers** sans restriction
+- Lors de la création/modification, sélection multiple d'entrepôts disponible
 
 ### Modification d'Employé
 
@@ -565,11 +582,13 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 ### Changement d'Entrepôt
 - Disponible depuis le menu "Plus"
 - Filtrage selon le mode :
-  - Mode Vente : Seulement entrepôts Boutique
+  - Mode Vente : Seulement entrepôts Boutique (les entrepôts STOCKAGE ne sont même pas listés)
   - Mode Gestion : Tous les entrepôts assignés
 - Changement en temps réel avec rafraîchissement des données
+- **Vidage automatique du panier** : Lors du changement d'entrepôt, le panier est automatiquement vidé pour éviter les ventes avec des produits d'un entrepôt différent
 
 **Restrictions implémentées :**
+- En mode Vente, les entrepôts `STOCKAGE` ne sont pas affichés dans la liste de sélection
 - En mode Vente, tentative de changement vers un entrepôt `STOCKAGE` → Alerte bloquante "Changement impossible"
 - En mode Gestion, changement vers n'importe quel entrepôt autorisé
 - Filtrage automatique des entrepôts disponibles selon le mode actuel
@@ -594,16 +613,25 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 5. Les produits stockés uniquement dans Stockage ne peuvent pas être vendus directement
 6. Les ventes sont liées à l'entrepôt Boutique et à l'employé qui les crée
 7. Les ventes peuvent être associées à un client (optionnel)
-8. **Système de points de fidélité** :
+8. **Filtrage par entrepôt** : Les listes de ventes et rapports sont automatiquement filtrées par l'entrepôt actuellement connecté
+9. **Modes de paiement** : 
+   - ✅ Espèces (cash)
+   - ✅ Mobile Money
+   - ❌ Carte bancaire (supprimé)
+   - ❌ Virement bancaire / Crédit (supprimé)
+   
+   **Note :** Seuls les modes de paiement Espèces et Mobile Money sont disponibles dans le système.
+10. **Système de points de fidélité** :
    - Les points de fidélité sont attribués au client après la vente
    - Le nombre de points attribués est basé sur le montant de la vente (taux défini par Admin)
    - Exemple : Si le taux est de 1%, une vente de 10 000 FCFA = 100 points
-9. **Utilisation des points pour remise** :
+11. **Utilisation des points pour remise** :
    - Le staff est alerté lors de la vente si le client a des points disponibles
    - Le staff peut choisir d'appliquer une remise basée sur les points
    - Conversion monétaire : Les points sont convertis en équivalent monétaire (ex: 1000 points = 1000 FCFA)
    - Le taux de conversion est configurable par Admin dans les paramètres
    - Le staff peut choisir d'accumuler les points OU d'utiliser les points pour une remise
+12. **Mise à jour automatique du stock** : Après validation d'une vente, le stock de l'entrepôt est automatiquement décrémenté
 
 **Workflow de vente :**
 - Produit dans Stockage → Transfert vers Boutique → Vente possible
@@ -614,6 +642,12 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 2. Vérification du stock disponible dans l'entrepôt connecté
 3. Vérification de la quantité déjà dans le panier
 4. Alerte de stock faible si ≤ 5 unités restantes après ajout
+
+**Vérifications dans le panier :**
+1. **Validation en temps réel** : Lors de la modification de quantité, vérification immédiate du stock disponible
+2. **Blocage de quantité excessive** : Impossible d'ajouter plus que le stock disponible
+3. **Validation avant checkout** : Vérification complète de tous les articles avant validation de la vente
+4. **Messages d'erreur explicites** : Alerte détaillée si stock insuffisant avec liste des articles concernés
 
 ### Impression de Reçu
 
@@ -681,12 +715,18 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 
 **Affichage du stock dans la liste des produits :**
 - **Stock prioritaire** : Le stock affiché est celui de l'entrepôt Boutique connecté (`getEffectiveWarehouse()`)
+- **Affichage cohérent** : Les produits apparaissent toujours avec un stock (même 0) pour l'entrepôt connecté
 - **Indicateurs visuels** :
   - "Rupture" si stock = 0
   - "X dispo" avec icône warning si stock ≤ 5
   - "Dans panier" si tout le stock est dans le panier
 - **Bouton "Voir autres entrepôts"** : Visible si le produit a plusieurs entrepôts avec stock
-- **Fallback** : Si pas d'inventaire par entrepôt, utilise le stock global du produit
+- **Virtual inventory** : Si un produit n'a pas d'entrée d'inventaire pour l'entrepôt connecté, affichage de 0 stock au lieu de "rupture de stock"
+
+**Affichage dans l'écran Inventaire :**
+- **Conversion automatique** : Les quantités (Decimal de Prisma) sont automatiquement converties en nombres pour l'affichage
+- **Affichage de l'unité** : L'unité du produit est affichée sous le SKU si disponible
+- **Pas de NaN** : Toutes les valeurs sont validées et converties pour éviter l'affichage de "NaN"
 
 ### Transferts de Stock
 
@@ -900,6 +940,109 @@ Succès ✅
 
 ---
 
-**Dernière mise à jour :** 2024-12-24
-**Version :** 1.0
+## Interface Utilisateur
+
+### Affichage du Nom d'Entrepôt
+- **Écran principal (POS)** : Nom de l'entrepôt affiché avec icône `storefront` sous le message "Bonjour"
+- **Écran Panier** : Barre d'entrepôt en haut de l'écran avec icône et nom
+- **Écran Ventes** : Barre d'entrepôt en haut de l'écran avec icône et nom
+- **Style** : Nom de l'entrepôt en couleur primaire, taille moyenne, avec icône pour identification rapide
+
+### Gestion du Panier
+- **Vidage automatique** : Le panier est automatiquement vidé lors du changement d'entrepôt
+- **Validation du stock** : Vérification en temps réel lors de la modification des quantités
+- **Blocage de checkout** : Impossible de valider une vente si les quantités dépassent le stock disponible
+- **Messages d'erreur** : Alertes détaillées avec liste des articles concernés en cas de problème de stock
+
+---
+
+## Champs Produit
+
+### Champs Requis
+- **Nom** : Nom du produit (minimum 2 caractères)
+- **SKU** : Code SKU unique du produit
+- **Prix de vente** : Prix de vente (doit être positif)
+
+### Champs Optionnels
+- **Code-barres** : Code-barres du produit (peut être scanné)
+- **Description** : Description détaillée du produit
+- **Prix d'achat** : Prix d'achat (pour calcul de marge)
+- **Frais de transport** : Frais de transport associés
+- **Unité** : Unité de mesure du produit (liste prédéfinie)
+  - Valeur par défaut : "piece"
+  - Options disponibles : Pièce, kg, g, Litre, mL, Mètre, cm, m², m³, Boîte, Paquet, Carton, Unité
+- **Niveau de stock minimum** : Seuil d'alerte pour stock faible (défaut : 5)
+- **Image** : Photo du produit
+- **Catégories** : Une ou plusieurs catégories (au moins une requise)
+
+### Gestion du Stock par Entrepôt
+- **Assignation multiple** : Le stock peut être défini pour plusieurs entrepôts lors de la création/modification
+- **Stock initial** : Défini lors de la création pour chaque entrepôt accessible
+- **Mise à jour** : Le stock peut être mis à jour par entrepôt après la création du produit
+
+---
+
+## Principes de Gestion des Données
+
+### Standardisation des Unités
+- **Liste prédéfinie** : Les unités de produits sont standardisées via une liste enum
+- **Cohérence** : Évite les variations d'écriture (ex: "kg" vs "kilogramme" vs "Kg")
+- **13 unités disponibles** : Pièce, kg, g, Litre, mL, Mètre, cm, m², m³, Boîte, Paquet, Carton, Unité
+- **Valeur par défaut** : "piece" si aucune unité n'est spécifiée
+- **Interface** : Sélection via modal avec libellés complets pour meilleure compréhension
+- **Avantages** : 
+  - Cohérence des données dans tout le système
+  - Facilite les rapports et analyses
+  - Réduit les erreurs de saisie
+
+### Gestion des Valeurs Numériques
+- **Conversion automatique** : Les valeurs Decimal (Prisma) sont converties en Number pour l'affichage
+- **Validation** : Toutes les valeurs numériques sont validées avant affichage pour éviter "NaN"
+- **Valeurs par défaut** : 
+  - Stock : 0 si non spécifié
+  - minStockLevel : 5 si non spécifié (modifiable)
+- **Gestion des erreurs** : Affichage de 0 au lieu de "NaN" pour les valeurs invalides
+
+### Modes de Paiement Simplifiés
+- **Deux modes uniquement** : Espèces et Mobile Money
+- **Suppression** : Carte bancaire et Virement bancaire/Crédit ont été supprimés
+- **Cohérence** : Simplification pour faciliter la gestion et réduire les erreurs
+- **Avantages** :
+  - Interface plus simple
+  - Moins de confusion pour les utilisateurs
+  - Alignement avec les pratiques locales
+
+### Filtrage par Entrepôt
+- **Principe fondamental** : Toutes les données sont filtrées par l'entrepôt connecté
+- **Ventes** : Seules les ventes de l'entrepôt connecté sont affichées
+- **Rapports** : Les rapports financiers sont filtrés par entrepôt
+- **Produits** : Les quantités affichées correspondent à l'entrepôt connecté
+- **Inventaire** : Affichage du stock par entrepôt avec possibilité de modification uniquement pour l'entrepôt connecté
+- **Avantages** :
+  - Sécurité des données
+  - Clarté pour les utilisateurs
+  - Prévention des erreurs de gestion
+
+### Vidage Automatique du Panier
+- **Principe** : Le panier est automatiquement vidé lors du changement d'entrepôt
+- **Raison** : Éviter les ventes avec des produits d'un entrepôt différent
+- **Sécurité** : Garantit que les ventes sont effectuées avec les bons stocks
+- **Implémentation** : Vérification de changement d'entrepôt avant vidage (ne vide que si changement réel)
+
+### Affichage du Nom d'Entrepôt
+- **Principe** : Le nom de l'entrepôt connecté est toujours visible
+- **Emplacements** : 
+  - Écran principal (sous "Bonjour")
+  - Écran Panier (barre en haut)
+  - Écran Ventes (barre en haut)
+- **Style** : Icône + nom en couleur primaire pour identification rapide
+- **Avantages** : 
+  - Réduction des erreurs de vente
+  - Clarté sur l'entrepôt actif
+  - Meilleure expérience utilisateur
+
+---
+
+**Dernière mise à jour :** 2024-12-26
+**Version :** 1.2
 

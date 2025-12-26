@@ -2,12 +2,11 @@ import { z } from 'zod';
 
 export const createEmployeeSchema = z.object({
   phone: z.string().min(1, 'Phone is required'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-  pinCode: z.string().min(4).max(6).optional().nullable(),
+  pinCode: z.string().min(4).max(6).optional().nullable(), // PIN for mobile POS login
   fullName: z.string().min(2, 'Full name must be at least 2 characters'),
-  email: z.string().email('Invalid email address').optional().nullable(),
   roleId: z.string().min(1, 'Role is required'),
-  warehouseId: z.string().min(1, 'Warehouse is required').optional().nullable(), // Required except for admin
+  warehouseId: z.string().min(1, 'Warehouse is required').optional().nullable(), // Primary warehouse (for backward compatibility)
+  warehouseIds: z.array(z.string().uuid()).optional().default([]), // Multiple warehouse assignments
   isActive: z.boolean().optional().default(true),
 }).refine((data) => {
   // Admin role doesn't require warehouse, but other roles do
@@ -20,11 +19,10 @@ export const createEmployeeSchema = z.object({
 export const updateEmployeeSchema = z.object({
   fullName: z.string().min(1).optional(),
   phone: z.string().min(1).optional(),
-  email: z.string().email().nullable().optional(),
-  password: z.string().min(6).optional(),
-  pinCode: z.string().min(4).max(6).nullable().optional(),
+  pinCode: z.string().min(4).max(6).nullable().optional(), // PIN for mobile POS login
   roleId: z.string().uuid().optional(),
-  warehouseId: z.string().uuid().nullable().optional(),
+  warehouseId: z.string().uuid().nullable().optional(), // Primary warehouse (for backward compatibility)
+  warehouseIds: z.array(z.string().uuid()).optional(), // Multiple warehouse assignments
   isActive: z.boolean().optional(),
 }).refine((data) => {
   // If roleId is provided, check warehouse requirement

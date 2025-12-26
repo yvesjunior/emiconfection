@@ -1,13 +1,19 @@
 import { z } from 'zod';
 
 export const loginSchema = z.object({
-  phone: z.string().min(8, 'Phone number is required'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  phone: z.string({
+    required_error: 'Phone number is required',
+    invalid_type_error: 'Phone must be a string'
+  }).min(4, 'Phone number must be at least 4 characters'),
+  password: z.string({
+    required_error: 'Password (PIN) is required',
+    invalid_type_error: 'Password must be a string'
+  }).min(4, 'Password (PIN) must be at least 4 characters'),
 });
 
 export const pinLoginSchema = z.object({
+  phone: z.string().min(4, 'Phone number is required'),
   pin: z.string().min(4, 'PIN must be at least 4 digits').max(6, 'PIN must be at most 6 digits'),
-  employeeId: z.string().uuid('Invalid employee ID').optional(),
 });
 
 export const refreshTokenSchema = z.object({
@@ -19,14 +25,8 @@ export const changePinSchema = z.object({
   newPin: z.string().min(4, 'PIN must be at least 4 digits').max(6, 'PIN must be at most 6 digits'),
 });
 
-export const changePasswordSchema = z.object({
-  currentPassword: z.string().min(6),
-  newPassword: z.string().min(6, 'Password must be at least 6 characters'),
-});
-
 export type LoginInput = z.infer<typeof loginSchema>;
 export type PinLoginInput = z.infer<typeof pinLoginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
 export type ChangePinInput = z.infer<typeof changePinSchema>;
-export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 

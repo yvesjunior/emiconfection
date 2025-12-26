@@ -67,7 +67,15 @@ export default function StaffManagementScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          // Navigate back to the more tab (Paramètres) - parent screen
+          if (router.canDismiss()) {
+            router.dismissAll();
+          }
+          setTimeout(() => {
+            router.push('/(app)/more' as any);
+          }, 100);
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Gestion du personnel</Text>

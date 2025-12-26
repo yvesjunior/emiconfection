@@ -74,6 +74,10 @@ export default function AppLayout() {
   const handleModeSwitch = async () => {
     if (!canSwitchMode) return;
     const newMode = mode === 'sell' ? 'manage' : 'sell';
+    
+    // If switching to sell mode, check if we need to change warehouse
+    // This will be handled in more.tsx's handleModeSwitch which has access to warehouse data
+    // For now, just switch the mode - the warehouse check happens in more.tsx
     await setMode(newMode);
     hapticImpact();
     // Navigate to the main screen to avoid being stuck on a hidden tab

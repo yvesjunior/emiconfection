@@ -69,7 +69,7 @@ export default function CustomersScreen() {
       style={styles.customerCard}
       onPress={() => {
         if (canManage) {
-          router.push(`/(app)/customers-manage?id=${item.id}`);
+          router.push(`/(app)/customers-manage?id=${item.id}&from=customers`);
         } else {
           router.push(`/(app)/customer-detail?id=${item.id}`);
         }
@@ -112,14 +112,20 @@ export default function CustomersScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(app)/more');
+          }
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Clients</Text>
         {canAdd && (
           <TouchableOpacity
             style={styles.addButton}
-            onPress={() => router.push('/(app)/customers-manage')}
+            onPress={() => router.push('/(app)/customers-manage?from=customers')}
           >
             <Ionicons name="add" size={24} color={colors.textInverse} />
           </TouchableOpacity>
@@ -177,7 +183,7 @@ export default function CustomersScreen() {
                 {canAdd && !search && (
                   <TouchableOpacity
                     style={styles.emptyStateButton}
-                    onPress={() => router.push('/(app)/customers-manage')}
+                    onPress={() => router.push('/(app)/customers-manage?from=customers')}
                   >
                     <Ionicons name="add" size={20} color={colors.textInverse} />
                     <Text style={styles.emptyStateButtonText}>Ajouter un client</Text>

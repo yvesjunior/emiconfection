@@ -11,7 +11,6 @@ interface Warehouse {
 
 interface Employee {
   id: string;
-  email: string;
   fullName: string;
   phone: string | null;
   avatarUrl: string | null;
@@ -20,6 +19,7 @@ interface Employee {
     name: string;
   };
   warehouse: Warehouse | null;
+  warehouses?: Warehouse[]; // Multiple warehouse assignments
   permissions: string[];
 }
 
@@ -48,6 +48,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isLoading: true,
 
   setAuth: async (employee, accessToken, refreshToken) => {
+    // CRITICAL SECURITY: Validate employee data before storing
+    if (!employee || !employee.id || !employee.role || !employee.phone) {
+      console.error('SECURITY ERROR: Invalid employee data in setAuth', employee);
+      throw new Error('Invalid employee data');
+    }
+    
+    // CRITICAL: Log employee data for debugging (remove in production)
+    console.log('setAuth called with:', {
+      employeeId: employee.id,
+      employeePhone: employee.phone,
+      employeeName: employee.fullName,
+      roleName: employee.role.name
+    });
+    
+    // Store employee data as-is (already validated)
     await SecureStore.setItemAsync('accessToken', accessToken);
     await SecureStore.setItemAsync('refreshToken', refreshToken);
     await SecureStore.setItemAsync('employee', JSON.stringify(employee));

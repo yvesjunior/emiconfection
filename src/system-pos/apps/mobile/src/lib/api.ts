@@ -13,13 +13,27 @@ export const api = axios.create({
   timeout: 10000,
 });
 
-// Request interceptor to add auth token
+// Request interceptor to add auth token and warehouse ID
 api.interceptors.request.use(
   async (config) => {
     const token = await SecureStore.getItemAsync('accessToken');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    
+    // Add selected warehouse ID to headers for backend to use
+    const selectedWarehouse = await SecureStore.getItemAsync('selectedWarehouse');
+    if (selectedWarehouse) {
+      try {
+        const warehouse = JSON.parse(selectedWarehouse);
+        if (warehouse?.id) {
+          config.headers['x-warehouse-id'] = warehouse.id;
+        }
+      } catch (e) {
+        // Ignore parsing errors
+      }
+    }
+    
     return config;
   },
   (error) => {

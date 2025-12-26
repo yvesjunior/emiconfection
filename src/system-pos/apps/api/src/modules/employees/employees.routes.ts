@@ -22,7 +22,11 @@ router.get('/', requirePermission(PERMISSIONS.EMPLOYEES_VIEW), async (req: Authe
 
 // GET /api/employees/:id - Get employee by ID
 router.get('/:id', requirePermission(PERMISSIONS.EMPLOYEES_VIEW), async (req: AuthenticatedRequest, res: Response) => {
-  const result = await employeesService.getEmployeeById(req.params.id);
+  const result = await employeesService.getEmployeeById(
+    req.params.id,
+    req.employee!.id,
+    req.employee!.roleName
+  );
   res.json({ success: true, data: result });
 });
 

@@ -195,9 +195,7 @@ async function calculateShiftStats(shiftId: string) {
 
   let totalSales = 0;
   let cashTotal = 0;
-  let cardTotal = 0;
   let mobileMoneyTotal = 0;
-  let creditTotal = 0;
   let refundTotal = 0;
 
   for (const sale of sales) {
@@ -209,14 +207,8 @@ async function calculateShiftStats(shiftId: string) {
         case PAYMENT_METHODS.CASH:
           cashTotal += amount;
           break;
-        case PAYMENT_METHODS.CARD:
-          cardTotal += amount;
-          break;
         case PAYMENT_METHODS.MOBILE_MONEY:
           mobileMoneyTotal += amount;
-          break;
-        case PAYMENT_METHODS.CREDIT:
-          creditTotal += amount;
           break;
       }
     }
@@ -235,9 +227,7 @@ async function calculateShiftStats(shiftId: string) {
     salesCount: sales.length,
     totalSales,
     cashTotal,
-    cardTotal,
     mobileMoneyTotal,
-    creditTotal,
     refundCount: refunds.length,
     refundTotal,
     netTotal: totalSales - refundTotal,

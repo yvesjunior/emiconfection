@@ -1,7 +1,6 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../../common/types/index.js';
-import { authenticate, requirePermission } from '../../common/middleware/auth.js';
-import { PERMISSIONS } from '../../config/constants.js';
+import { authenticate, requireRole } from '../../common/middleware/auth.js';
 import * as categoriesService from './categories.service.js';
 import { createCategorySchema, updateCategorySchema } from './categories.schema.js';
 
@@ -28,8 +27,8 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
   res.json({ success: true, data: result });
 });
 
-// POST /api/categories - Create category
-router.post('/', requirePermission(PERMISSIONS.CATEGORIES_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+// POST /api/categories - Create category (Admin only)
+router.post('/', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   // Convert "none" to null for parentId
   if (req.body.parentId === 'none') {
     req.body.parentId = null;
@@ -39,8 +38,8 @@ router.post('/', requirePermission(PERMISSIONS.CATEGORIES_MANAGE), async (req: A
   res.status(201).json({ success: true, data: result });
 });
 
-// PUT /api/categories/:id - Update category
-router.put('/:id', requirePermission(PERMISSIONS.CATEGORIES_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+// PUT /api/categories/:id - Update category (Admin only)
+router.put('/:id', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   // Convert "none" to null for parentId
   if (req.body.parentId === 'none') {
     req.body.parentId = null;
@@ -50,8 +49,8 @@ router.put('/:id', requirePermission(PERMISSIONS.CATEGORIES_MANAGE), async (req:
   res.json({ success: true, data: result });
 });
 
-// DELETE /api/categories/:id - Delete category
-router.delete('/:id', requirePermission(PERMISSIONS.CATEGORIES_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+// DELETE /api/categories/:id - Delete category (Admin only)
+router.delete('/:id', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   const result = await categoriesService.deleteCategory(req.params.id);
   res.json({ success: true, ...result });
 });

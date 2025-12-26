@@ -99,7 +99,17 @@ export default function SettingsLoyaltyScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => {
+            // Navigate back to the more tab (Paramètres)
+            // First dismiss any modals, then navigate to the tab
+            if (router.canDismiss()) {
+              router.dismissAll();
+            }
+            // Use setTimeout to ensure dismiss completes before navigation
+            setTimeout(() => {
+              router.push('/(app)/more' as any);
+            }, 100);
+          }}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Points de fidélité</Text>

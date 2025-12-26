@@ -67,6 +67,8 @@ export default function SalesScreen() {
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
   const hasPermission = useAuthStore((state) => state.hasPermission);
   const employee = useAuthStore((state) => state.employee);
+  const getEffectiveWarehouse = useAuthStore((state) => state.getEffectiveWarehouse);
+  const currentWarehouse = getEffectiveWarehouse();
 
   const canVoid = hasPermission('sales:void');
   const canRefund = hasPermission('sales:refund');
@@ -100,16 +102,21 @@ export default function SalesScreen() {
     }
   }, [dateFilter]);
 
-  // Fetch sales
+  // Fetch sales - ALWAYS filter by current warehouse
   const { data: salesData, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['sales', dateRange],
+    queryKey: ['sales', dateRange, currentWarehouse?.id],
     queryFn: async () => {
       const params = new URLSearchParams({ limit: '100' });
       if (dateRange.dateFrom) params.append('dateFrom', dateRange.dateFrom);
       if (dateRange.dateTo) params.append('dateTo', dateRange.dateTo);
+      // CRITICAL: Always include warehouseId to filter sales by current warehouse
+      if (currentWarehouse?.id) {
+        params.append('warehouseId', currentWarehouse.id);
+      }
       const res = await api.get(`/sales?${params}`);
       return res.data.data;
     },
+    enabled: !!currentWarehouse?.id, // Don't fetch if no warehouse selected
   });
 
   // Fetch sale details when selected
@@ -216,7 +223,6 @@ export default function SalesScreen() {
   const getPaymentLabel = (method: string) => {
     switch (method) {
       case 'cash': return 'Espèces';
-      case 'card': return 'Carte';
       case 'mobile_money': return 'Mobile Money';
       default: return method;
     }
@@ -225,7 +231,6 @@ export default function SalesScreen() {
   const getPaymentIcon = (method: string) => {
     switch (method) {
       case 'cash': return 'cash-outline';
-      case 'card': return 'card-outline';
       case 'mobile_money': return 'phone-portrait-outline';
       default: return 'wallet-outline';
     }
@@ -301,6 +306,13 @@ export default function SalesScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Warehouse Name Bar */}
+      {currentWarehouse && (
+        <View style={styles.warehouseBar}>
+          <Ionicons name="storefront" size={18} color={colors.primary} style={styles.warehouseBarIcon} />
+          <Text style={styles.warehouseBarName}>{currentWarehouse.name}</Text>
+        </View>
+      )}
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Ventes</Text>
@@ -638,6 +650,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  warehouseBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    backgroundColor: colors.primaryLight + '15',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  warehouseBarIcon: {
+    marginRight: 6,
+  },
+  warehouseBarName: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.primary,
   },
   headerTitle: {
     fontSize: fontSize.xl,

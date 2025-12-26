@@ -13,10 +13,13 @@ router.use(authenticate);
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const query = { ...req.query } as any;
   
-  // Scope by warehouse
-  const warehouseId = getWarehouseScope(req);
-  if (warehouseId) {
-    query.warehouseId = warehouseId;
+  // CRITICAL: Prioritize query param warehouseId (from frontend) over getWarehouseScope
+  // This ensures the frontend can explicitly request sales for a specific warehouse
+  if (!query.warehouseId) {
+    const warehouseId = getWarehouseScope(req);
+    if (warehouseId) {
+      query.warehouseId = warehouseId;
+    }
   }
   
   // Cashiers can only see their own sales

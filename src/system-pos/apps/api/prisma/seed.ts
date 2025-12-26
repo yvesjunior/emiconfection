@@ -114,7 +114,9 @@ async function main() {
 
   // Manager permissions
   const managerPerms = [
+    'products:create',
     'products:read',
+    'products:update',
     'inventory:adjust',
     'inventory:view',
     'sales:create',
@@ -133,6 +135,8 @@ async function main() {
     'employees:reset_pin',
     'reports:view',
     'reports:export',
+    'expenses:view', // Allow managers to view expenses for financial reports
+    'expenses:create', // Allow managers to create expenses for their warehouses
     'purchases:manage',
   ];
 
@@ -192,15 +196,13 @@ async function main() {
   console.log('✅ Default warehouse created');
 
   // Create admin user
-  const hashedPassword = await bcrypt.hash('admin123', 10);
   const hashedPin = await bcrypt.hash('1234', 10);
 
   await prisma.employee.upsert({
-    where: { phone: '0612345678' },
+    where: { phone: '0611' },
     update: {},
     create: {
-      phone: '0612345678',
-      password: hashedPassword,
+      phone: '0611',
       pinCode: hashedPin,
       fullName: 'System Administrator',
       roleId: adminRole.id,
@@ -210,8 +212,7 @@ async function main() {
   });
 
   console.log('✅ Admin user created');
-  console.log('   Téléphone: 0612345678');
-  console.log('   Password: admin123');
+  console.log('   Téléphone: 0611');
   console.log('   PIN: 1234');
 
   // Create default settings

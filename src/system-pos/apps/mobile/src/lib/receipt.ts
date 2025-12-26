@@ -33,9 +33,7 @@ interface ReceiptData {
 const getPaymentMethodLabel = (method: string): string => {
   switch (method) {
     case 'cash': return 'Espèces';
-    case 'card': return 'Carte bancaire';
     case 'mobile_money': return 'Mobile Money';
-    case 'credit': return 'Crédit';
     default: return method;
   }
 };

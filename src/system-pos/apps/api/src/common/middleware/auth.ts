@@ -179,3 +179,74 @@ export function getWarehouseForCreate(req: AuthenticatedRequest): string {
   throw ApiError.badRequest('Please select a warehouse before creating items');
 }
 
+/**
+ * Validates if an employee has access to a specific warehouse.
+ * Admin has access to all warehouses.
+ * Other employees must have the warehouse in their assigned warehouses list.
+ * 
+ * @param employeeId - The employee ID
+ * @param warehouseId - The warehouse ID to check access for
+ * @returns Promise<boolean> - True if employee has access, false otherwise
+ */
+export async function validateWarehouseAccess(
+  employeeId: string,
+  warehouseId: string
+): Promise<boolean> {
+  // Get employee with role and warehouse assignments
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    include: {
+      role: true,
+      warehouses: {
+        select: { warehouseId: true },
+      },
+    },
+  });
+
+  if (!employee) {
+    return false;
+  }
+
+  // Admin has access to all warehouses (case-insensitive check)
+  if (employee.role.name.toLowerCase() === 'admin') {
+    return true;
+  }
+
+  // Check if warehouse is in assigned warehouses (many-to-many)
+  const hasAssignedWarehouse = employee.warehouses.some(
+    (ew) => ew.warehouseId === warehouseId
+  );
+
+  if (hasAssignedWarehouse) {
+    return true;
+  }
+
+  // Also check primary warehouseId for backward compatibility
+  if (employee.warehouseId === warehouseId) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Validates warehouse access and throws error if access denied.
+ * Use this in service functions to enforce warehouse access control.
+ * 
+ * @param employeeId - The employee ID
+ * @param warehouseId - The warehouse ID to check access for
+ * @throws ApiError.forbidden if employee doesn't have access
+ */
+export async function requireWarehouseAccess(
+  employeeId: string,
+  warehouseId: string
+): Promise<void> {
+  const hasAccess = await validateWarehouseAccess(employeeId, warehouseId);
+  
+  if (!hasAccess) {
+    throw ApiError.forbidden(
+      'You do not have access to manage inventory for this warehouse'
+    );
+  }
+}
+

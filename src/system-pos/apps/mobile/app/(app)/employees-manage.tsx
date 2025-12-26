@@ -53,11 +53,10 @@ export default function EmployeesManageScreen() {
   // Form state
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [pinCode, setPinCode] = useState('');
   const [roleId, setRoleId] = useState<string | null>(null);
-  const [warehouseId, setWarehouseId] = useState<string | null>(null);
+  const [warehouseId, setWarehouseId] = useState<string | null>(null); // Primary warehouse (for backward compatibility)
+  const [selectedWarehouseIds, setSelectedWarehouseIds] = useState<string[]>([]); // Multiple warehouse assignments
   const [isActive, setIsActive] = useState(true);
   const [showRolePicker, setShowRolePicker] = useState(false);
   const [showWarehousePicker, setShowWarehousePicker] = useState(false);
@@ -95,12 +94,26 @@ export default function EmployeesManageScreen() {
 
   const warehouses = warehousesData || [];
 
-  // Filter warehouses based on role
+  // Get selected role to filter warehouses
+  const selectedRole = roles.find((r) => r.id === roleId);
+  const isSellerRole = selectedRole?.name === 'cashier';
+
+  // Filter warehouses based on role and current user permissions
   const availableWarehouses = warehouses.filter((w) => {
+    // If seller role, only show BOUTIQUE warehouses
+    if (isSellerRole && w.type !== 'BOUTIQUE' && w.type !== null) {
+      return false;
+    }
+
+    // Filter by current user permissions
     if (isAdmin) return true; // Admin can assign to any warehouse
     if (isManager) {
-      // Manager can only assign to their own warehouse
-      return employee?.warehouseId === w.id;
+      // Manager can only assign to their own warehouses
+      const managerWarehouseIds = [
+        ...(employee?.warehouses?.map((ew: any) => ew.id) || []),
+        employee?.warehouse?.id,
+      ].filter(Boolean);
+      return managerWarehouseIds.includes(w.id);
     }
     return false;
   });
@@ -124,14 +137,62 @@ export default function EmployeesManageScreen() {
 
   useEffect(() => {
     if (employeeData) {
+      // Check hierarchy before allowing edit
+      const currentRole = employee?.role?.name;
+      const targetRole = employeeData.role?.name;
+      
+      if (currentRole === 'manager') {
+        if (targetRole === 'admin' || targetRole === 'manager') {
+          Alert.alert(
+            'Accès refusé',
+            'Vous ne pouvez pas modifier un Administrateur ou un autre Manager. Vous pouvez uniquement gérer les Vendeurs assignés à votre entrepôt.',
+            [
+              {
+                text: 'OK',
+                onPress: () => router.replace('/(app)/employees-list'),
+              },
+            ]
+          );
+          return;
+        }
+        // Manager can only edit Sellers from their warehouse
+        if (employee?.warehouseId && employeeData.warehouseId !== employee.warehouseId) {
+          Alert.alert(
+            'Accès refusé',
+            'Vous ne pouvez modifier que les employés assignés à votre entrepôt.',
+            [
+              {
+                text: 'OK',
+                onPress: () => router.replace('/(app)/employees-list'),
+              },
+            ]
+          );
+          return;
+        }
+      } else if (currentRole === 'cashier') {
+        Alert.alert(
+          'Accès refusé',
+          'Vous n\'avez pas la permission de modifier les employés.',
+          [
+            {
+              text: 'OK',
+              onPress: () => router.replace('/(app)/employees-list'),
+            },
+          ]
+        );
+        return;
+      }
+
       setFullName(employeeData.fullName || '');
       setPhone(employeeData.phone || '');
-      setEmail(employeeData.email || '');
       setRoleId(employeeData.roleId);
       setWarehouseId(employeeData.warehouseId);
+      // Set multiple warehouse assignments
+      const warehouseIds = employeeData.warehouses?.map((ew: any) => ew.warehouse?.id || ew.id) || [];
+      setSelectedWarehouseIds(warehouseIds);
       setIsActive(employeeData.isActive ?? true);
     }
-  }, [employeeData]);
+  }, [employeeData, employee, router]);
 
   const saveMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -147,7 +208,7 @@ export default function EmployeesManageScreen() {
       queryClient.invalidateQueries({ queryKey: ['employees'] });
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Succès', `Employé ${isEditing ? 'modifié' : 'créé'} avec succès`, [
-        { text: 'OK', onPress: () => router.back() },
+        { text: 'OK', onPress: () => router.replace('/(app)/employees-list') },
       ]);
     },
     onError: (error: any) => {
@@ -167,19 +228,14 @@ export default function EmployeesManageScreen() {
       return;
     }
 
-    if (!isEditing && !password.trim()) {
-      Alert.alert('Erreur', 'Le mot de passe est requis');
-      return;
-    }
-
     if (!roleId) {
       Alert.alert('Erreur', 'Veuillez sélectionner un rôle');
       return;
     }
 
     const selectedRole = roles.find((r) => r.id === roleId);
-    if (selectedRole?.name !== 'admin' && !warehouseId) {
-      Alert.alert('Erreur', 'Un entrepôt est requis pour ce rôle');
+    if (selectedRole?.name !== 'admin' && selectedWarehouseIds.length === 0 && !warehouseId) {
+      Alert.alert('Erreur', 'Au moins un entrepôt est requis pour ce rôle');
       return;
     }
 
@@ -187,18 +243,19 @@ export default function EmployeesManageScreen() {
     const data: any = {
       fullName: fullName.trim(),
       phone: phone.trim(),
-      email: email.trim() || null,
       roleId,
       warehouseId: selectedRole?.name === 'admin' ? null : warehouseId,
+      warehouseIds: selectedWarehouseIds, // Multiple warehouse assignments
       isActive,
     };
 
-    if (!isEditing) {
-      data.password = password;
-    }
-
     if (pinCode.trim()) {
       data.pinCode = pinCode.trim();
+    } else if (!isEditing) {
+      // PIN is required for new employees
+      Alert.alert('Erreur', 'Le PIN est requis pour les nouveaux employés');
+      setIsSaving(false);
+      return;
     }
 
     saveMutation.mutate(data, {
@@ -222,7 +279,7 @@ export default function EmployeesManageScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => router.replace('/(app)/employees-list')}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
@@ -241,13 +298,18 @@ export default function EmployeesManageScreen() {
     );
   }
 
-  const selectedRole = roles.find((r) => r.id === roleId);
-  const selectedWarehouse = warehouses.find((w) => w.id === warehouseId);
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => {
+          // Navigate back to employees-list - parent screen
+          if (router.canDismiss()) {
+            router.dismissAll();
+          }
+          setTimeout(() => {
+            router.push('/(app)/employees-list' as any);
+          }, 100);
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -281,35 +343,6 @@ export default function EmployeesManageScreen() {
             keyboardType="phone-pad"
           />
         </View>
-
-        {/* Email */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="email@example.com"
-            placeholderTextColor={colors.textMuted}
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
-        </View>
-
-        {/* Password (only for new employees) */}
-        {!isEditing && (
-          <View style={styles.section}>
-            <Text style={styles.label}>Mot de passe *</Text>
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Mot de passe"
-              placeholderTextColor={colors.textMuted}
-              secureTextEntry
-            />
-          </View>
-        )}
 
         {/* PIN Code */}
         <View style={styles.section}>
@@ -363,32 +396,48 @@ export default function EmployeesManageScreen() {
           )}
         </View>
 
-        {/* Warehouse */}
+        {/* Warehouses (Multiple Selection) */}
         {selectedRole?.name !== 'admin' && (
           <View style={styles.section}>
-            <Text style={styles.label}>Entrepôt *</Text>
+            <Text style={styles.label}>Entrepôts *</Text>
             <TouchableOpacity
               style={styles.pickerButton}
               onPress={() => setShowWarehousePicker(true)}
-              disabled={availableWarehouses.length === 1}
             >
-              {selectedWarehouse ? (
+              {selectedWarehouseIds.length > 0 ? (
                 <View style={styles.pickerSelected}>
                   <Ionicons name="storefront-outline" size={20} color={colors.primary} />
                   <Text style={styles.pickerSelectedText}>
-                    {selectedWarehouse.name} ({selectedWarehouse.code})
+                    {selectedWarehouseIds.length} entrepôt{selectedWarehouseIds.length > 1 ? 's' : ''} sélectionné{selectedWarehouseIds.length > 1 ? 's' : ''}
                   </Text>
                 </View>
               ) : (
-                <Text style={styles.pickerPlaceholder}>Sélectionner un entrepôt</Text>
+                <Text style={styles.pickerPlaceholder}>Sélectionner des entrepôts</Text>
               )}
-              {availableWarehouses.length > 1 && (
-                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
-              )}
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
             </TouchableOpacity>
+            {selectedWarehouseIds.length > 0 && (
+              <View style={styles.selectedWarehousesList}>
+                {selectedWarehouseIds.map((id) => {
+                  const warehouse = availableWarehouses.find((w) => w.id === id);
+                  return warehouse ? (
+                    <View key={id} style={styles.selectedWarehouseTag}>
+                      <Text style={styles.selectedWarehouseTagText}>
+                        {warehouse.name} ({warehouse.code})
+                      </Text>
+                    </View>
+                  ) : null;
+                })}
+              </View>
+            )}
+            {isSellerRole && (
+              <Text style={styles.helperText}>
+                Seuls les entrepôts de type BOUTIQUE sont disponibles pour les vendeurs
+              </Text>
+            )}
             {isManager && (
               <Text style={styles.helperText}>
-                Vous ne pouvez assigner qu'à votre entrepôt
+                Vous ne pouvez assigner qu'à vos entrepôts
               </Text>
             )}
           </View>
@@ -455,12 +504,14 @@ export default function EmployeesManageScreen() {
                 style={styles.roleOption}
                 onPress={() => {
                   setRoleId(item.id);
-                  // If role is admin, clear warehouse
+                  // If role is admin, clear warehouses
                   if (item.name === 'admin') {
                     setWarehouseId(null);
+                    setSelectedWarehouseIds([]);
                   } else if (isManager && employee?.warehouseId) {
                     // If Manager, set their warehouse
                     setWarehouseId(employee.warehouseId);
+                    setSelectedWarehouseIds([employee.warehouseId]);
                   }
                   setShowRolePicker(false);
                 }}
@@ -489,7 +540,7 @@ export default function EmployeesManageScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* Warehouse Picker Modal */}
+      {/* Warehouse Picker Modal (Multiple Selection) */}
       <Modal
         visible={showWarehousePicker}
         animationType="slide"
@@ -498,7 +549,7 @@ export default function EmployeesManageScreen() {
       >
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Sélectionner un entrepôt</Text>
+            <Text style={styles.modalTitle}>Sélectionner des entrepôts</Text>
             <TouchableOpacity onPress={() => setShowWarehousePicker(false)}>
               <Ionicons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
@@ -506,27 +557,63 @@ export default function EmployeesManageScreen() {
           <FlatList
             data={availableWarehouses}
             keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.warehouseOption}
-                onPress={() => {
-                  setWarehouseId(item.id);
-                  setShowWarehousePicker(false);
-                }}
-              >
-                <Ionicons name="storefront-outline" size={24} color={colors.primary} />
-                <View style={styles.warehouseOptionInfo}>
-                  <Text style={styles.warehouseOptionName}>{item.name}</Text>
-                  <Text style={styles.warehouseOptionCode}>
-                    {item.code} - {item.type === 'BOUTIQUE' ? 'Boutique' : 'Stockage'}
-                  </Text>
-                </View>
-                {warehouseId === item.id && (
-                  <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
-                )}
-              </TouchableOpacity>
-            )}
+            renderItem={({ item }) => {
+              const isSelected = selectedWarehouseIds.includes(item.id);
+              return (
+                <TouchableOpacity
+                  style={styles.warehouseOption}
+                  onPress={() => {
+                    if (isSelected) {
+                      // Deselect
+                      setSelectedWarehouseIds(selectedWarehouseIds.filter((id) => id !== item.id));
+                      // Also clear primary warehouse if it was this one
+                      if (warehouseId === item.id) {
+                        setWarehouseId(null);
+                      }
+                    } else {
+                      // Select
+                      setSelectedWarehouseIds([...selectedWarehouseIds, item.id]);
+                      // Set as primary warehouse if none selected
+                      if (!warehouseId) {
+                        setWarehouseId(item.id);
+                      }
+                    }
+                    hapticNotification(Haptics.NotificationFeedbackType.Success);
+                  }}
+                >
+                  <View style={styles.checkboxContainer}>
+                    <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                      {isSelected && (
+                        <Ionicons name="checkmark" size={16} color={colors.textInverse} />
+                      )}
+                    </View>
+                  </View>
+                  <Ionicons name="storefront-outline" size={24} color={colors.primary} />
+                  <View style={styles.warehouseOptionInfo}>
+                    <Text style={styles.warehouseOptionName}>{item.name}</Text>
+                    <Text style={styles.warehouseOptionCode}>
+                      {item.code} - {item.type === 'BOUTIQUE' ? 'Boutique' : item.type === 'STOCKAGE' ? 'Stockage' : 'Autre'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
           />
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              style={styles.modalConfirmButton}
+              onPress={() => {
+                if (selectedWarehouseIds.length === 0 && selectedRole?.name !== 'admin') {
+                  Alert.alert('Erreur', 'Veuillez sélectionner au moins un entrepôt');
+                  return;
+                }
+                setShowWarehousePicker(false);
+                hapticNotification(Haptics.NotificationFeedbackType.Success);
+              }}
+            >
+              <Text style={styles.modalConfirmButtonText}>Confirmer</Text>
+            </TouchableOpacity>
+          </View>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
@@ -724,6 +811,61 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
     color: colors.textMuted,
     marginTop: spacing.xs / 2,
+  },
+  checkboxContainer: {
+    marginRight: spacing.sm,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  selectedWarehousesList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  selectedWarehouseTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.primary + '20',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.primary + '40',
+  },
+  selectedWarehouseTagText: {
+    fontSize: fontSize.sm,
+    color: colors.primary,
+    fontWeight: '500',
+  },
+  modalFooter: {
+    padding: spacing.lg,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  modalConfirmButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+  },
+  modalConfirmButtonText: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.textInverse,
   },
   accessDenied: {
     flex: 1,

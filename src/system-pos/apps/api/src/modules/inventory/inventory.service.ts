@@ -2,6 +2,7 @@ import { Decimal } from '@prisma/client/runtime/library';
 import prisma from '../../config/database.js';
 import { ApiError, PaginationQuery } from '../../common/types/index.js';
 import { getPaginationParams, createPaginatedResponse } from '../../common/utils/pagination.js';
+import { requireWarehouseAccess } from '../../common/middleware/auth.js';
 import { STOCK_MOVEMENT_TYPES } from '../../config/constants.js';
 import { AdjustStockInput, TransferStockInput, SetStockLevelsInput } from './inventory.schema.js';
 
@@ -15,11 +16,88 @@ interface InventoryQuery extends PaginationQuery {
 export async function getInventory(query: InventoryQuery) {
   const { page, limit, skip, sortBy, sortOrder } = getPaginationParams(query);
 
-  const where: any = {};
+  // Build product filter
+  const productWhere: any = {
+    isActive: true, // Only show active products
+  };
 
-  if (query.warehouseId) {
-    where.warehouseId = query.warehouseId;
+  // Search by product name or SKU
+  if (query.search) {
+    productWhere.OR = [
+      { name: { contains: query.search, mode: 'insensitive' } },
+      { sku: { contains: query.search, mode: 'insensitive' } },
+    ];
   }
+
+  if (query.productId) {
+    productWhere.id = query.productId;
+  }
+
+  // If warehouseId is specified, show all products with inventory for that warehouse (or 0 stock)
+  if (query.warehouseId) {
+    // Get warehouse info first
+    const warehouse = await prisma.warehouse.findUnique({
+      where: { id: query.warehouseId },
+      select: { id: true, name: true, code: true, type: true },
+    });
+
+    if (!warehouse) {
+      throw ApiError.notFound('Warehouse not found');
+    }
+
+    // Get all products with their inventory for this warehouse
+    const [products, totalProducts] = await Promise.all([
+      prisma.product.findMany({
+        where: productWhere,
+        skip,
+        take: limit,
+        orderBy: { [sortBy]: sortOrder },
+        include: {
+          inventory: {
+            where: { warehouseId: query.warehouseId },
+          },
+        },
+      }),
+      prisma.product.count({ where: productWhere }),
+    ]);
+
+    // Transform to inventory items - create entry for each product (even if no inventory record)
+    const inventoryItems = products.map((product) => {
+      const inventoryEntry = product.inventory[0]; // Should be 0 or 1 entry for this warehouse
+      
+      return {
+        id: inventoryEntry?.id || `temp-${product.id}-${query.warehouseId}`,
+        productId: product.id,
+        warehouseId: query.warehouseId,
+        quantity: inventoryEntry?.quantity || new Decimal(0),
+        minStockLevel: inventoryEntry?.minStockLevel || new Decimal(0),
+        maxStockLevel: inventoryEntry?.maxStockLevel || null,
+        lastRestockedAt: inventoryEntry?.lastRestockedAt || null,
+        createdAt: inventoryEntry?.createdAt || product.createdAt,
+        updatedAt: inventoryEntry?.updatedAt || product.updatedAt,
+        product: {
+          id: product.id,
+          name: product.name,
+          sku: product.sku,
+          unit: product.unit,
+        },
+        warehouse: warehouse,
+      };
+    });
+
+    // Filter for low stock if requested
+    let filteredInventory = inventoryItems;
+    if (query.lowStock === 'true') {
+      filteredInventory = inventoryItems.filter(
+        (item) => Number(item.quantity) <= Number(item.minStockLevel)
+      );
+    }
+
+    return createPaginatedResponse(filteredInventory, totalProducts, page, limit);
+  }
+
+  // No warehouseId specified - show all inventory entries (existing behavior)
+  const where: any = {};
 
   if (query.productId) {
     where.productId = query.productId;
@@ -35,7 +113,7 @@ export async function getInventory(query: InventoryQuery) {
     };
   }
 
-  // Get all inventory first, then filter for low stock
+  // Get all inventory entries
   const [allInventory, total] = await Promise.all([
     prisma.inventory.findMany({
       where,
@@ -44,7 +122,7 @@ export async function getInventory(query: InventoryQuery) {
       orderBy: { [sortBy]: sortOrder },
       include: {
         product: { select: { id: true, name: true, sku: true, unit: true } },
-        warehouse: { select: { id: true, name: true, code: true } },
+        warehouse: { select: { id: true, name: true, code: true, type: true } },
       },
     }),
     prisma.inventory.count({ where }),
@@ -53,7 +131,7 @@ export async function getInventory(query: InventoryQuery) {
   // Filter for low stock if requested
   let inventory = allInventory;
   if (query.lowStock === 'true') {
-    inventory = allInventory.filter(item => Number(item.quantity) <= Number(item.minStockLevel));
+    inventory = allInventory.filter((item) => Number(item.quantity) <= Number(item.minStockLevel));
   }
 
   return createPaginatedResponse(inventory, total, page, limit);
@@ -124,6 +202,9 @@ export async function getStockMovements(query: InventoryQuery & { type?: string 
 }
 
 export async function adjustStock(input: AdjustStockInput, employeeId: string) {
+  // Validate warehouse access
+  await requireWarehouseAccess(employeeId, input.warehouseId);
+
   // Verify product exists
   const product = await prisma.product.findUnique({
     where: { id: input.productId },
@@ -195,6 +276,10 @@ export async function transferStock(input: TransferStockInput, employeeId: strin
   if (input.fromWarehouseId === input.toWarehouseId) {
     throw ApiError.badRequest('Source and destination warehouses must be different');
   }
+
+  // Validate warehouse access - employee must have access to source warehouse
+  // (destination warehouse access is optional, as transfers can be requested)
+  await requireWarehouseAccess(employeeId, input.fromWarehouseId);
 
   // Verify product exists
   const product = await prisma.product.findUnique({

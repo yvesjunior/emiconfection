@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import * as Haptics from 'expo-haptics';
 import api from '../../src/lib/api';
+import { useAuthStore } from '../../src/store/auth';
 import { formatCurrency } from '../../src/lib/utils';
 import { colors, spacing, fontSize, borderRadius, shadows } from '../../src/lib/theme';
 
@@ -77,18 +78,27 @@ export default function ReportsScreen() {
 
   const { startDate, endDate } = getDateRange();
 
-  // Fetch sales
+  // Get current warehouse for filtering
+  const getEffectiveWarehouse = useAuthStore((state) => state.getEffectiveWarehouse);
+  const currentWarehouse = getEffectiveWarehouse();
+
+  // Fetch sales - ALWAYS filter by current warehouse
   const { data: salesData, isLoading: salesLoading, refetch } = useQuery({
-    queryKey: ['sales-report', period],
+    queryKey: ['sales-report', period, currentWarehouse?.id],
     queryFn: async () => {
       const params = new URLSearchParams({
         dateFrom: startDate.toISOString(),
         dateTo: endDate.toISOString(),
         limit: '500',
       });
+      // CRITICAL: Always include warehouseId to filter sales by current warehouse
+      if (currentWarehouse?.id) {
+        params.append('warehouseId', currentWarehouse.id);
+      }
       const res = await api.get(`/sales?${params}`);
       return res.data.data || [];
     },
+    enabled: !!currentWarehouse?.id, // Don't fetch if no warehouse selected
   });
 
   // Fetch expenses
@@ -251,7 +261,6 @@ export default function ReportsScreen() {
   const getPaymentMethodLabel = (method: string) => {
     switch (method) {
       case 'cash': return 'Espèces';
-      case 'card': return 'Carte';
       case 'mobile_money': return 'Mobile Money';
       default: return method;
     }
@@ -267,7 +276,13 @@ export default function ReportsScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(app)/more');
+          }
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Rapports</Text>
@@ -388,7 +403,7 @@ export default function ReportsScreen() {
                   <View key={method} style={styles.paymentRow}>
                     <View style={styles.paymentMethod}>
                       <Ionicons
-                        name={method === 'cash' ? 'cash-outline' : method === 'card' ? 'card-outline' : 'phone-portrait-outline'}
+                        name={method === 'cash' ? 'cash-outline' : 'phone-portrait-outline'}
                         size={20}
                         color={colors.primary}
                       />

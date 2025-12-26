@@ -52,10 +52,12 @@ export default function LoginScreen() {
   const router = useRouter();
   const { setAuth, setSelectedWarehouse } = useAuthStore();
   const { setMode, setCanSwitchMode } = useAppModeStore();
+  const [phone, setPhone] = useState('');
   const [pin, setPin] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [selectedMode, setSelectedMode] = useState<AppMode>('sell');
   const [rememberMode, setRememberMode] = useState(false);
+  const [showPhoneInput, setShowPhoneInput] = useState(true);
   const inputRef = useRef<TextInput>(null);
   
   // Warehouse selection state
@@ -83,6 +85,24 @@ export default function LoginScreen() {
     loadSavedMode();
   }, []);
 
+  const handlePhoneChange = (value: string) => {
+    // Only allow digits
+    const digitsOnly = value.replace(/[^0-9]/g, '');
+    if (digitsOnly.length <= 10) {
+      setPhone(digitsOnly);
+      hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  const handlePhoneSubmit = () => {
+    if (phone.length >= 4) {
+      setShowPhoneInput(false);
+      hapticImpact(Haptics.ImpactFeedbackStyle.Medium);
+    } else {
+      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide (minimum 4 chiffres)');
+    }
+  };
+
   const handlePinChange = async (value: string) => {
     if (value.length <= 6) {
       setPin(value);
@@ -91,12 +111,17 @@ export default function LoginScreen() {
       // Auto-submit when PIN is 4-6 digits
       if (value.length >= 4) {
         // Small delay to show the last dot
-        setTimeout(() => handleLogin(value), 100);
+        setTimeout(() => handleLogin(phone, value), 100);
       }
     }
   };
 
-  const handleLogin = async (pinValue: string) => {
+  const handleLogin = async (phoneValue: string, pinValue: string) => {
+    if (phoneValue.length < 4) {
+      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide (minimum 4 chiffres)');
+      setShowPhoneInput(true);
+      return;
+    }
     if (pinValue.length < 4) {
       Alert.alert('Erreur', 'Le PIN doit contenir au moins 4 chiffres');
       return;
@@ -104,11 +129,82 @@ export default function LoginScreen() {
 
     setIsLoading(true);
     try {
-      const response = await api.post('/auth/pin-login', { pin: pinValue });
+      // Use standard login endpoint: login = phone number, password = PIN
+      // Both are validated together in the backend
+      const trimmedPhone = phoneValue.trim();
+      const password = String(pinValue || '').trim();
+      
+      // Validate before sending
+      if (!trimmedPhone || trimmedPhone.length < 4) {
+        Alert.alert('Erreur', 'Le numéro de téléphone doit contenir au moins 4 chiffres');
+        setIsLoading(false);
+        return;
+      }
+      
+      if (!password || password.length < 4) {
+        Alert.alert('Erreur', 'Le mot de passe (PIN) doit contenir au moins 4 caractères');
+        setIsLoading(false);
+        return;
+      }
+      
+      const loginData = { 
+        phone: trimmedPhone, 
+        password: password
+      };
+      
+      console.log('Sending login request:', {
+        phone: loginData.phone,
+        phoneLength: loginData.phone.length,
+        phoneType: typeof loginData.phone,
+        passwordLength: loginData.password.length,
+        passwordType: typeof loginData.password,
+        fullRequest: JSON.stringify(loginData)
+      });
+      
+      const response = await api.post('/auth/login', loginData);
+      console.log('Login response received:', {
+        success: response.data.success,
+        hasEmployee: !!response.data.data?.employee,
+        employeeName: response.data.data?.employee?.fullName
+      });
       const { employee, accessToken, refreshToken } = response.data.data;
+      
+      // Basic validation - backend already validates phone + PIN together
+      if (!employee || !employee.id || !employee.role) {
+        console.error('ERROR: Invalid employee data in response', employee);
+        Alert.alert(
+          'Erreur',
+          'Une erreur est survenue lors de l\'authentification. Veuillez réessayer.'
+        );
+        setPin('');
+        setShowPhoneInput(true);
+        setIsLoading(false);
+        return;
+      }
+      
+      // Log for debugging
+      console.log('Login successful:', {
+        phone: employee.phone,
+        name: employee.fullName,
+        role: employee.role.name,
+        roleId: employee.role.id
+      });
       
       // Check if user is admin (can access all warehouses)
       const isAdmin = employee.role.name === 'admin';
+      const isSeller = employee.role.name === 'cashier';
+      
+      // CRITICAL SECURITY CHECK: Sellers cannot use manage mode
+      // Force sell mode immediately if seller selected manage mode
+      const effectiveMode = isSeller ? 'sell' : selectedMode;
+      
+      if (isSeller && selectedMode === 'manage') {
+        Alert.alert(
+          'Mode non autorisé',
+          'Les vendeurs ne peuvent pas accéder au mode Gestion. Le mode Vente sera activé automatiquement.'
+        );
+        setSelectedMode('sell'); // Force sell mode in UI
+      }
       
       // Show warehouse selector based on selected mode
       // In manage mode: show all warehouses (BOUTIQUE and STOCKAGE)
@@ -118,18 +214,31 @@ export default function LoginScreen() {
           headers: { Authorization: `Bearer ${accessToken}` }
         });
         
-        // Filter warehouses based on selected mode
+        // Filter warehouses based on effective mode AND employee access
         const allWarehouses = warehouseResponse.data.data.filter((w: Warehouse) => w.isActive);
-        const availableWarehouses = selectedMode === 'manage' 
-          ? allWarehouses // In manage mode, show all warehouses
-          : allWarehouses.filter((w: Warehouse) => w.type === 'BOUTIQUE' || !w.type); // In sell mode, only BOUTIQUE
         
-        // If employee has assigned warehouse, check if it's compatible with selected mode
+        // Filter by employee access first
+        const accessibleWarehouses = allWarehouses.filter((w: Warehouse) => {
+          // Admin can access all warehouses
+          if (isAdmin) return true;
+          
+          // Check if employee has access to this warehouse
+          const hasAccess = employee.warehouses?.some((ew: any) => ew.id === w.id) ||
+                           employee.warehouse?.id === w.id;
+          return hasAccess;
+        });
+        
+        // Then filter by effective mode (use effectiveMode, not selectedMode)
+        const availableWarehouses = effectiveMode === 'manage' 
+          ? accessibleWarehouses // In manage mode, show all accessible warehouses
+          : accessibleWarehouses.filter((w: Warehouse) => w.type === 'BOUTIQUE' || !w.type); // In sell mode, only BOUTIQUE
+        
+        // If employee has assigned warehouse, check if it's compatible with effective mode
         if (employee.warehouseId) {
           const assignedWarehouse = allWarehouses.find((w: Warehouse) => w.id === employee.warehouseId);
           if (assignedWarehouse) {
-            // Check if assigned warehouse is compatible with selected mode
-            if (selectedMode === 'sell' && assignedWarehouse.type === 'STOCKAGE') {
+            // Check if assigned warehouse is compatible with effective mode
+            if (effectiveMode === 'sell' && assignedWarehouse.type === 'STOCKAGE') {
               // Employee assigned to STOCKAGE but trying to login in sell mode
               Alert.alert(
                 'Connexion impossible',
@@ -140,7 +249,8 @@ export default function LoginScreen() {
               return;
             } else if (availableWarehouses.find((w: Warehouse) => w.id === assignedWarehouse.id)) {
               // Assigned warehouse is compatible, use it
-              await completeLogin(employee, accessToken, refreshToken, assignedWarehouse);
+              // IMPORTANT: Pass effectiveMode, not selectedMode, and ensure employee object is not modified
+              await completeLogin(employee, accessToken, refreshToken, assignedWarehouse, effectiveMode);
               setIsLoading(false);
               return;
             }
@@ -161,12 +271,14 @@ export default function LoginScreen() {
           return;
         } else {
           // No compatible warehouses available
-          const modeText = selectedMode === 'manage' ? 'disponibles' : 'de type Boutique';
+          const modeText = effectiveMode === 'manage' ? 'disponibles' : 'de type Boutique';
           Alert.alert(
             'Aucun entrepôt disponible',
-            `Aucun entrepôt ${modeText} n'est disponible pour la connexion en mode ${selectedMode === 'manage' ? 'Gestion' : 'Vente'}.`
+            `Aucun entrepôt ${modeText} n'est disponible pour la connexion en mode ${effectiveMode === 'manage' ? 'Gestion' : 'Vente'}.`
           );
           setPin('');
+          setPhone('');
+          setShowPhoneInput(true);
           setIsLoading(false);
           return;
         }
@@ -174,45 +286,120 @@ export default function LoginScreen() {
         console.log('Could not fetch warehouses:', err);
         // Fallback to employee's assigned warehouse if fetch fails
         if (employee.warehouseId) {
-          await completeLogin(employee, accessToken, refreshToken);
+          await completeLogin(employee, accessToken, refreshToken, undefined, effectiveMode);
           setIsLoading(false);
           return;
         }
       }
 
-      await completeLogin(employee, accessToken, refreshToken);
+      await completeLogin(employee, accessToken, refreshToken, undefined, effectiveMode);
     } catch (error: any) {
+      console.error('Login error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        phone: phoneValue,
+        pinLength: pinValue.length,
+        fullError: JSON.stringify(error.response?.data, null, 2)
+      });
       hapticNotification(Haptics.NotificationFeedbackType.Error);
-      Alert.alert(
-        'Connexion échouée',
-        error.response?.data?.message || 'PIN invalide. Veuillez réessayer.'
-      );
+      
+      // Show specific validation errors if available
+      // Error handler returns 'details' array
+      const errorDetails = error.response?.data?.details || error.response?.data?.errors;
+      let errorMessage = 'Numéro de téléphone ou PIN invalide. Veuillez réessayer.';
+      
+      if (errorDetails && Array.isArray(errorDetails)) {
+        errorMessage = errorDetails.map((e: any) => {
+          const field = e.field || e.path?.join('.') || '';
+          return field ? `${field}: ${e.message}` : e.message;
+        }).join('\n');
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      }
+      
+      Alert.alert('Connexion échouée', errorMessage);
       setPin('');
+      setShowPhoneInput(true);
       setIsLoading(false);
     }
   };
 
-  const completeLogin = async (employee: any, accessToken: string, refreshToken: string, warehouse?: Warehouse) => {
-    await setAuth(employee, accessToken, refreshToken);
+  const completeLogin = async (employee: any, accessToken: string, refreshToken: string, warehouse?: Warehouse, effectiveMode?: AppMode) => {
+    // Basic validation - backend already validated the employee
+    if (!employee || !employee.id || !employee.role) {
+      console.error('ERROR: Invalid employee data in completeLogin', employee);
+      Alert.alert(
+        'Erreur',
+        'Données d\'employé invalides. Veuillez vous reconnecter.'
+      );
+      setIsLoading(false);
+      return;
+    }
+    
+    console.log('completeLogin called:', {
+      employeeId: employee.id,
+      employeeName: employee.fullName,
+      employeePhone: employee.phone,
+      roleName: employee.role?.name,
+      effectiveMode
+    });
+    
+    // CRITICAL: Ensure employee object is never modified - use a deep copy
+    const employeeData = JSON.parse(JSON.stringify(employee)); // Deep copy to prevent mutations
+    
+    // CRITICAL: Validate employee role before proceeding
+    const roleName = employeeData.role?.name;
+    if (!roleName) {
+      console.error('SECURITY ERROR: Missing role name', employeeData);
+      Alert.alert(
+        'Erreur de sécurité',
+        'Rôle d\'employé manquant. Veuillez vous reconnecter.'
+      );
+      setIsLoading(false);
+      return;
+    }
+    
+    const isSeller = roleName === 'cashier';
+    const isAdmin = roleName === 'admin';
+    const isManager = roleName === 'manager';
+    
+    // CRITICAL: Log for debugging (remove in production)
+    console.log('completeLogin called with:', {
+      employeeId: employeeData.id,
+      employeePhone: employeeData.phone,
+      employeeName: employeeData.fullName,
+      roleName: roleName,
+      effectiveMode: effectiveMode
+    });
+    
+    // Determine effective mode (sellers can only use sell mode)
+    const finalMode = effectiveMode || (isSeller ? 'sell' : selectedMode);
+    
+    // CRITICAL SECURITY: Force sell mode for sellers regardless of what was selected
+    if (isSeller && finalMode === 'manage') {
+      console.error('SECURITY WARNING: Seller attempted to use manage mode - forcing sell mode');
+      await setMode('sell');
+      setCanSwitchMode(false);
+    } else {
+      // Set the app mode and whether user can switch
+      await setMode(finalMode);
+      const canSwitch = isAdmin || isManager;
+      setCanSwitchMode(canSwitch);
+      
+      // If user selected manage mode but doesn't have permission, fallback to sell
+      if (finalMode === 'manage' && !canSwitch) {
+        await setMode('sell');
+        Alert.alert('Mode ajusté', 'Seuls les Administrateurs et Managers peuvent accéder au mode Gestion. Mode Vente activé.');
+      }
+    }
+    
+    // Store auth with original employee data (never modified)
+    await setAuth(employeeData, accessToken, refreshToken);
     
     if (warehouse) {
       setSelectedWarehouse(warehouse);
-    }
-    
-    // Check if user has management permissions
-    const canManage = employee.role.name === 'admin' || 
-      employee.permissions.includes('products:create') ||
-      employee.permissions.includes('products:update') ||
-      employee.permissions.includes('categories:manage');
-    
-    // Set the app mode and whether user can switch
-    await setMode(selectedMode);
-    setCanSwitchMode(canManage);
-    
-    // If user selected manage mode but doesn't have permission, fallback to sell
-    if (selectedMode === 'manage' && !canManage) {
-      await setMode('sell');
-      Alert.alert('Mode ajusté', 'Vous n\'avez pas les permissions pour le mode Gestion. Mode Vente activé.');
     }
     
     hapticNotification(Haptics.NotificationFeedbackType.Success);
@@ -230,26 +417,55 @@ export default function LoginScreen() {
     const selectedWarehouse = warehouses.find(w => w.id === selectedWarehouseId);
     if (!selectedWarehouse) return;
     
+    // Validate warehouse access before completing login
+    const employee = pendingAuth.employee;
+    const isAdmin = employee.role.name === 'admin';
+    const isSeller = employee.role.name === 'cashier';
+    
+    // CRITICAL: Determine effective mode (sellers can only use sell mode)
+    const effectiveMode = isSeller ? 'sell' : selectedMode;
+    
+    if (!isAdmin) {
+      // Check if employee has access to selected warehouse
+      const hasAccess = employee.warehouses?.some((ew: any) => ew.id === selectedWarehouse.id) ||
+                       employee.warehouse?.id === selectedWarehouse.id;
+      
+      if (!hasAccess) {
+        Alert.alert(
+          'Accès refusé',
+          'Vous n\'avez pas accès à cet entrepôt. Veuillez sélectionner un entrepôt auquel vous êtes assigné.'
+        );
+        return;
+      }
+    }
+    
     setShowWarehouseModal(false);
     setIsLoading(true);
     
+    // CRITICAL: Pass effectiveMode to ensure sellers can't use manage mode
     await completeLogin(
       pendingAuth.employee,
       pendingAuth.accessToken,
       pendingAuth.refreshToken,
-      selectedWarehouse
+      selectedWarehouse,
+      effectiveMode
     );
   };
 
   const handleNumberPress = (num: string) => {
-    if (pin.length < 6) {
+    if (showPhoneInput) {
+      handlePhoneChange(phone + num);
+    } else if (pin.length < 6) {
       handlePinChange(pin + num);
     }
   };
 
   const handleBackspace = () => {
-    if (pin.length > 0) {
+    if (!showPhoneInput && pin.length > 0) {
       setPin(pin.slice(0, -1));
+      hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+    } else if (showPhoneInput && phone.length > 0) {
+      setPhone(phone.slice(0, -1));
       hapticImpact(Haptics.ImpactFeedbackStyle.Light);
     }
   };
@@ -353,54 +569,89 @@ export default function LoginScreen() {
             <Ionicons name="storefront" size={40} color={colors.textInverse} />
           </View>
           <Text style={styles.title}>POS Terminal</Text>
-          <Text style={styles.subtitle}>Entrez votre PIN pour continuer</Text>
+          <Text style={styles.subtitle}>
+            {showPhoneInput ? 'Entrez votre numéro de téléphone' : 'Entrez votre PIN'}
+          </Text>
         </View>
 
-        {/* Mode Selector */}
-        <View style={styles.modeSelector}>
-          <TouchableOpacity
-            style={[
-              styles.modeButton,
-              selectedMode === 'sell' && styles.modeButtonActive,
-            ]}
-            onPress={() => setSelectedMode('sell')}
-          >
-            <Ionicons
-              name="cart-outline"
-              size={20}
-              color={selectedMode === 'sell' ? colors.textInverse : colors.textSecondary}
-            />
-            <Text
-              style={[
-                styles.modeButtonText,
-                selectedMode === 'sell' && styles.modeButtonTextActive,
-              ]}
-            >
-              Vente
+        {/* Phone Input */}
+        {showPhoneInput && (
+          <View style={styles.phoneInputContainer}>
+            <View style={styles.phoneInputWrapper}>
+              <Ionicons name="call-outline" size={24} color={colors.textMuted} style={styles.phoneIcon} />
+              <TextInput
+                ref={inputRef}
+                style={styles.phoneInput}
+                value={phone}
+                onChangeText={handlePhoneChange}
+                placeholder="Numéro de téléphone"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="phone-pad"
+                autoFocus
+                maxLength={10}
+              />
+              {phone.length >= 4 && (
+                <TouchableOpacity
+                  style={styles.phoneSubmitButton}
+                  onPress={handlePhoneSubmit}
+                >
+                  <Ionicons name="arrow-forward" size={24} color={colors.primary} />
+                </TouchableOpacity>
+              )}
+            </View>
+            <Text style={styles.phoneHelpText}>
+              Exemple: 0611, 0622, 0633
             </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.modeButton,
-              selectedMode === 'manage' && styles.modeButtonActiveManage,
-            ]}
-            onPress={() => setSelectedMode('manage')}
-          >
-            <Ionicons
-              name="create-outline"
-              size={20}
-              color={selectedMode === 'manage' ? colors.textInverse : colors.textSecondary}
-            />
-            <Text
+          </View>
+        )}
+
+        {/* Mode Selector - Only show if phone is entered (we'll check role after login) */}
+        {!showPhoneInput && (
+          <View style={styles.modeSelector}>
+            <TouchableOpacity
               style={[
-                styles.modeButtonText,
-                selectedMode === 'manage' && styles.modeButtonTextActive,
+                styles.modeButton,
+                selectedMode === 'sell' && styles.modeButtonActive,
               ]}
+              onPress={() => setSelectedMode('sell')}
             >
-              Gestion
-            </Text>
-          </TouchableOpacity>
-        </View>
+              <Ionicons
+                name="cart-outline"
+                size={20}
+                color={selectedMode === 'sell' ? colors.textInverse : colors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.modeButtonText,
+                  selectedMode === 'sell' && styles.modeButtonTextActive,
+                ]}
+              >
+                Vente
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.modeButton,
+                selectedMode === 'manage' && styles.modeButtonActiveManage,
+              ]}
+              onPress={() => setSelectedMode('manage')}
+            >
+              <Ionicons
+                name="create-outline"
+                size={20}
+                color={selectedMode === 'manage' ? colors.textInverse : colors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.modeButtonText,
+                  selectedMode === 'manage' && styles.modeButtonTextActive,
+                ]}
+              >
+                Gestion
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Remember Mode Toggle */}
         <View style={styles.rememberContainer}>
@@ -414,7 +665,7 @@ export default function LoginScreen() {
         </View>
 
         {/* PIN Dots */}
-        {renderDots()}
+        {!showPhoneInput && renderDots()}
 
         {/* Loading indicator */}
         {isLoading && (
@@ -426,7 +677,7 @@ export default function LoginScreen() {
         )}
 
         {/* Keypad */}
-        {renderKeypad()}
+        {!showPhoneInput && renderKeypad()}
 
         {/* Help text */}
         <Text style={styles.helpText}>
@@ -445,8 +696,8 @@ export default function LoginScreen() {
             <Text style={styles.modalTitle}>Sélectionner un entrepôt</Text>
             <Text style={styles.modalSubtitle}>
               {selectedMode === 'manage' 
-                ? 'Mode Gestion : Tous les entrepôts sont disponibles'
-                : 'Mode Vente : Seuls les entrepôts Boutique sont disponibles'}
+                ? 'Mode Gestion : Sélectionnez un entrepôt auquel vous avez accès'
+                : 'Mode Vente : Sélectionnez un entrepôt Boutique auquel vous avez accès'}
             </Text>
           </View>
 
@@ -780,6 +1031,40 @@ const styles = StyleSheet.create({
     fontSize: fontSize.lg,
     fontWeight: '600',
     color: colors.textInverse,
+  },
+  phoneInputContainer: {
+    width: '100%',
+    maxWidth: 400,
+    marginBottom: spacing.xl,
+  },
+  phoneInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderWidth: 2,
+    borderColor: colors.border,
+    ...shadows.sm,
+  },
+  phoneIcon: {
+    marginRight: spacing.sm,
+  },
+  phoneInput: {
+    flex: 1,
+    fontSize: fontSize.lg,
+    color: colors.text,
+    paddingVertical: spacing.sm,
+  },
+  phoneSubmitButton: {
+    padding: spacing.xs,
+  },
+  phoneHelpText: {
+    marginTop: spacing.sm,
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
 });
 

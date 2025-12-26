@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -42,9 +43,12 @@ interface Employee {
   isActive: boolean;
 }
 
+type RoleFilter = 'all' | 'admin' | 'manager' | 'cashier';
+
 export default function EmployeesListScreen() {
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const hasPermission = useAuthStore((state) => state.hasPermission);
   const mode = useAppModeStore((state) => state.mode);
   
@@ -52,6 +56,8 @@ export default function EmployeesListScreen() {
   const isTabMode = mode === 'manage';
 
   const employee = useAuthStore((state) => state.employee);
+  const isManager = employee?.role?.name === 'manager';
+  const isAdmin = employee?.role?.name === 'admin';
 
   // Fetch employees (API already filters based on role)
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -64,34 +70,90 @@ export default function EmployeesListScreen() {
 
   const allEmployees: Employee[] = data?.data || [];
   
+  // Count employees by role (only count what's visible to current user)
+  const adminCount = isManager ? 0 : allEmployees.filter((e) => e.role.name === 'admin').length;
+  const managerCount = isManager ? 0 : allEmployees.filter((e) => e.role.name === 'manager').length;
+  const cashierCount = allEmployees.filter((e) => e.role.name === 'cashier').length;
+  
+  // Filter by role
+  // For managers: 'all' shows themselves + sellers, 'cashier' shows only sellers
+  // For admins: all filters work normally
+  const filteredByRole = roleFilter === 'all'
+    ? allEmployees
+    : roleFilter === 'cashier'
+      ? allEmployees.filter((e) => e.role.name === 'cashier')
+      : isManager
+        ? [] // Managers can't filter by admin/manager
+        : allEmployees.filter((e) => e.role.name === roleFilter);
+  
   // Filter by search
   const employees = search
-    ? allEmployees.filter((e) =>
+    ? filteredByRole.filter((e) =>
         e.fullName.toLowerCase().includes(search.toLowerCase()) ||
         e.phone.toLowerCase().includes(search.toLowerCase()) ||
         e.role.name.toLowerCase().includes(search.toLowerCase())
       )
-    : allEmployees;
+    : filteredByRole;
 
-  const handleEmployeePress = useCallback((employee: Employee) => {
+  const handleEmployeePress = useCallback((employeeToEdit: Employee) => {
     if (!canManage) {
       Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de gérer les employés');
       return;
     }
+
+    // Check hierarchy: Manager cannot edit Admin or other Managers
+    const currentRole = employee?.role?.name;
+    const targetRole = employeeToEdit.role.name;
+    
+    if (currentRole === 'manager') {
+      if (targetRole === 'admin' || targetRole === 'manager') {
+        Alert.alert(
+          'Accès refusé',
+          'Vous ne pouvez pas modifier un Administrateur ou un autre Manager. Vous pouvez uniquement gérer les Vendeurs assignés à votre entrepôt.'
+        );
+        return;
+      }
+      // Manager can only edit Sellers from their warehouse
+      if (employee?.warehouseId && employeeToEdit.warehouseId !== employee.warehouseId) {
+        Alert.alert(
+          'Accès refusé',
+          'Vous ne pouvez modifier que les employés assignés à votre entrepôt.'
+        );
+        return;
+      }
+    } else if (currentRole === 'cashier') {
+      // Seller cannot edit anyone
+      Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de modifier les employés');
+      return;
+    }
+
     hapticImpact(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/(app)/employees-manage?employeeId=${employee.id}`);
-  }, [canManage, router]);
+    router.push(`/(app)/employees-manage?employeeId=${employeeToEdit.id}`);
+  }, [canManage, router, employee]);
 
   const renderEmployee = ({ item }: { item: Employee }) => {
     const roleName = item.role.name === 'admin' ? 'Admin' : 
                      item.role.name === 'manager' ? 'Manager' : 
                      item.role.name === 'cashier' ? 'Vendeur' : item.role.name;
 
+    // Check if current user can edit this employee
+    const currentRole = employee?.role?.name;
+    const canEditThisEmployee = 
+      currentRole === 'admin' || // Admin can edit all
+      (currentRole === 'manager' && 
+       item.role.name === 'cashier' && 
+       (!employee?.warehouseId || item.warehouseId === employee.warehouseId)); // Manager can only edit Sellers from their warehouse
+
     return (
       <TouchableOpacity
-        style={[styles.employeeItem, !item.isActive && styles.employeeItemInactive]}
+        style={[
+          styles.employeeItem, 
+          !item.isActive && styles.employeeItemInactive,
+          canManage && !canEditThisEmployee && styles.employeeItemReadOnly,
+        ]}
         onPress={() => handleEmployeePress(item)}
-        activeOpacity={0.7}
+        activeOpacity={canManage && !canEditThisEmployee ? 1 : 0.7}
+        disabled={canManage && !canEditThisEmployee}
       >
         <View style={styles.employeeIcon}>
           <Ionicons
@@ -154,17 +216,25 @@ export default function EmployeesListScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={[styles.header, isTabMode && styles.headerTab]}>
-        {!isTabMode ? (
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={24} color={colors.text} />
-          </TouchableOpacity>
-        ) : (
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          // Navigate back to staff-management - parent screen
+          if (router.canDismiss()) {
+            router.dismissAll();
+          }
+          setTimeout(() => {
+            router.push('/(app)/staff-management' as any);
+          }, 100);
+        }}>
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
+        </TouchableOpacity>
+        {isTabMode ? (
           <View style={styles.headerTitleContainer}>
             <Text style={styles.headerTitleLarge}>Personnel</Text>
             <Text style={styles.headerSubtitle}>Gérer votre équipe</Text>
           </View>
+        ) : (
+          <Text style={styles.headerTitle}>Gérer le personnel</Text>
         )}
-        {!isTabMode && <Text style={styles.headerTitle}>Gérer le personnel</Text>}
         {canManage && (
           <TouchableOpacity
             style={[styles.addButton, isTabMode && styles.addButtonTab]}
@@ -173,6 +243,64 @@ export default function EmployeesListScreen() {
             <Ionicons name="add" size={24} color={colors.textInverse} />
           </TouchableOpacity>
         )}
+      </View>
+
+      {/* Role Tabs */}
+      <View style={styles.tabsContainer}>
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsContent}
+        >
+          <TouchableOpacity
+            style={[styles.tab, roleFilter === 'all' && styles.tabActive]}
+            onPress={() => {
+              setRoleFilter('all');
+              hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Text style={[styles.tabText, roleFilter === 'all' && styles.tabTextActive]}>
+              Tous {allEmployees.length > 0 && `(${allEmployees.length})`}
+            </Text>
+          </TouchableOpacity>
+          {!isManager && (
+            <>
+              <TouchableOpacity
+                style={[styles.tab, roleFilter === 'admin' && styles.tabActive]}
+                onPress={() => {
+                  setRoleFilter('admin');
+                  hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text style={[styles.tabText, roleFilter === 'admin' && styles.tabTextActive]}>
+                  Admin {adminCount > 0 && `(${adminCount})`}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tab, roleFilter === 'manager' && styles.tabActive]}
+                onPress={() => {
+                  setRoleFilter('manager');
+                  hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text style={[styles.tabText, roleFilter === 'manager' && styles.tabTextActive]}>
+                  Manager {managerCount > 0 && `(${managerCount})`}
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
+          <TouchableOpacity
+            style={[styles.tab, roleFilter === 'cashier' && styles.tabActive]}
+            onPress={() => {
+              setRoleFilter('cashier');
+              hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Text style={[styles.tabText, roleFilter === 'cashier' && styles.tabTextActive]}>
+              Vendeur {cashierCount > 0 && `(${cashierCount})`}
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
       </View>
 
       {/* Search Bar */}
@@ -214,7 +342,15 @@ export default function EmployeesListScreen() {
               <>
                 <Ionicons name="people-outline" size={48} color={colors.textMuted} />
                 <Text style={styles.emptyStateText}>
-                  {search ? 'Aucun employé trouvé' : 'Aucun employé'}
+                  {search 
+                    ? 'Aucun employé trouvé' 
+                    : roleFilter === 'all'
+                      ? 'Aucun employé'
+                      : roleFilter === 'admin'
+                        ? 'Aucun administrateur'
+                        : roleFilter === 'manager'
+                          ? 'Aucun manager'
+                          : 'Aucun vendeur'}
                 </Text>
                 {canManage && !search && (
                   <TouchableOpacity
@@ -290,6 +426,35 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
   },
+  tabsContainer: {
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  tabsContent: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+  },
+  tab: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.surfaceSecondary,
+    marginRight: spacing.sm,
+  },
+  tabActive: {
+    backgroundColor: colors.primary,
+  },
+  tabText: {
+    fontSize: fontSize.sm,
+    fontWeight: '500',
+    color: colors.textMuted,
+  },
+  tabTextActive: {
+    color: colors.textInverse,
+    fontWeight: '600',
+  },
   searchContainer: {
     padding: spacing.md,
     backgroundColor: colors.surface,
@@ -322,6 +487,10 @@ const styles = StyleSheet.create({
   },
   employeeItemInactive: {
     opacity: 0.6,
+  },
+  employeeItemReadOnly: {
+    opacity: 0.5,
+    backgroundColor: colors.surfaceSecondary,
   },
   employeeIcon: {
     width: 48,

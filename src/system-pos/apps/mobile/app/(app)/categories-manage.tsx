@@ -72,10 +72,11 @@ export default function CategoriesManageScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { categoryId } = useLocalSearchParams<{ categoryId?: string }>();
-  const hasPermission = useAuthStore((state) => state.hasPermission);
+  const employee = useAuthStore((state) => state.employee);
 
   const isEditing = !!categoryId;
-  const canManage = hasPermission('categories:manage');
+  // Only Admin can manage categories
+  const canManage = employee?.role?.name === 'admin';
 
   // Form state
   const [name, setName] = useState('');
@@ -87,10 +88,10 @@ export default function CategoriesManageScreen() {
   const [color, setColor] = useState<string>('#3B82F6');
   const [showIconPicker, setShowIconPicker] = useState(false);
 
-  // Check permission
+  // Check permission - Only Admin can manage categories
   useEffect(() => {
     if (!canManage) {
-      Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de gérer les catégories');
+      Alert.alert('Accès refusé', 'Seuls les administrateurs peuvent gérer les catégories');
       router.back();
     }
   }, [canManage, router]);
@@ -232,7 +233,7 @@ export default function CategoriesManageScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/(app)/categories-list')}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>

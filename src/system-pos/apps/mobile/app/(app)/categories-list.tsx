@@ -38,10 +38,11 @@ interface Category {
 export default function CategoriesListScreen() {
   const router = useRouter();
   const [search, setSearch] = useState('');
-  const hasPermission = useAuthStore((state) => state.hasPermission);
+  const employee = useAuthStore((state) => state.employee);
   const mode = useAppModeStore((state) => state.mode);
   
-  const canManage = hasPermission('categories:manage');
+  // Only Admin can manage categories
+  const canManage = employee?.role?.name === 'admin';
   const isTabMode = mode === 'manage'; // When in manage mode, this is a tab
 
   // Fetch categories
@@ -64,7 +65,7 @@ export default function CategoriesListScreen() {
 
   const handleCategoryPress = useCallback((category: Category) => {
     if (!canManage) {
-      Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de gérer les catégories');
+      Alert.alert('Accès refusé', 'Seuls les administrateurs peuvent gérer les catégories');
       return;
     }
     hapticImpact(Haptics.ImpactFeedbackStyle.Light);
@@ -142,7 +143,13 @@ export default function CategoriesListScreen() {
       {/* Header */}
       <View style={[styles.header, isTabMode && styles.headerTab]}>
         {!isTabMode ? (
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+          <TouchableOpacity style={styles.backButton} onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace('/(app)/');
+            }
+          }}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
         ) : (

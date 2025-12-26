@@ -16,7 +16,7 @@ export async function getEmployees(
   if (query.search) {
     where.OR = [
       { fullName: { contains: query.search, mode: 'insensitive' } },
-      { email: { contains: query.search, mode: 'insensitive' } },
+      { phone: { contains: query.search, mode: 'insensitive' } },
     ];
   }
 
@@ -30,24 +30,70 @@ export async function getEmployees(
 
   // Apply hierarchy restrictions
   if (currentEmployeeRole === 'manager' && currentEmployeeId) {
-    // Manager can only see Sellers assigned to their warehouses
+    // Manager can see themselves and all Sellers assigned to their warehouses
     const currentEmployee = await prisma.employee.findUnique({
       where: { id: currentEmployeeId },
-      include: { warehouse: true },
+      include: { 
+        warehouse: true,
+        warehouses: {
+          include: {
+            warehouse: true
+          }
+        }
+      },
     });
 
-    if (currentEmployee?.warehouseId) {
-      where.warehouseId = currentEmployee.warehouseId;
-      // Only show Sellers (cashier role)
+    if (!currentEmployee) {
+      return createPaginatedResponse([], 0, page, limit);
+    }
+
+    // Get all warehouse IDs the manager is assigned to (primary + many-to-many)
+    const managerWarehouseIds: string[] = [];
+    if (currentEmployee.warehouseId) {
+      managerWarehouseIds.push(currentEmployee.warehouseId);
+    }
+    currentEmployee.warehouses.forEach(ew => {
+      if (!managerWarehouseIds.includes(ew.warehouseId)) {
+        managerWarehouseIds.push(ew.warehouseId);
+      }
+    });
+
+    if (managerWarehouseIds.length === 0) {
+      // Manager with no warehouse assignment sees only themselves
+      where.id = currentEmployeeId;
+    } else {
+      // Get seller role ID
       const sellerRole = await prisma.role.findFirst({
         where: { name: 'cashier' },
       });
+
       if (sellerRole) {
-        where.roleId = sellerRole.id;
+        // Show: manager themselves OR sellers from assigned warehouses
+        // Sellers can be assigned via primary warehouseId OR via EmployeeWarehouse table
+        where.OR = [
+          { id: currentEmployeeId }, // Manager themselves
+          {
+            AND: [
+              { roleId: sellerRole.id }, // Only sellers
+              {
+                OR: [
+                  { warehouseId: { in: managerWarehouseIds } }, // Primary warehouse assignment
+                  {
+                    warehouses: {
+                      some: {
+                        warehouseId: { in: managerWarehouseIds }
+                      }
+                    }
+                  }, // Many-to-many warehouse assignment
+                ],
+              },
+            ],
+          },
+        ];
+      } else {
+        // If seller role doesn't exist, show only manager themselves
+        where.id = currentEmployeeId;
       }
-    } else {
-      // Manager with no warehouse sees nothing
-      return createPaginatedResponse([], 0, page, limit);
     }
   }
   // Admin sees all (no filter)
@@ -61,18 +107,27 @@ export async function getEmployees(
       include: {
         role: { select: { id: true, name: true } },
         warehouse: { select: { id: true, name: true, code: true } },
+        warehouses: {
+          include: {
+            warehouse: { select: { id: true, name: true, code: true } },
+          },
+        },
       },
     }),
     prisma.employee.count({ where }),
   ]);
 
   // Remove sensitive fields
-  const sanitized = employees.map(({ password, pinCode, ...rest }) => rest);
+  const sanitized = employees.map(({ pinCode, ...rest }) => rest);
 
   return createPaginatedResponse(sanitized, total, page, limit);
 }
 
-export async function getEmployeeById(id: string) {
+export async function getEmployeeById(
+  id: string,
+  currentEmployeeId?: string,
+  currentEmployeeRole?: string
+) {
   const employee = await prisma.employee.findUnique({
     where: { id },
     include: {
@@ -84,6 +139,11 @@ export async function getEmployeeById(id: string) {
         },
       },
       warehouse: { select: { id: true, name: true, code: true } },
+      warehouses: {
+        include: {
+          warehouse: { select: { id: true, name: true, code: true } },
+        },
+      },
     },
   });
 
@@ -91,7 +151,31 @@ export async function getEmployeeById(id: string) {
     throw ApiError.notFound('Employee not found');
   }
 
-  const { password, pinCode, ...rest } = employee;
+  // Apply hierarchy restrictions
+  if (currentEmployeeRole === 'manager') {
+    // Manager cannot view Admins or other Managers
+    if (employee.role.name === 'admin' || employee.role.name === 'manager') {
+      throw ApiError.forbidden('You do not have permission to view this employee');
+    }
+    // Manager can only view Sellers from their warehouse
+    if (currentEmployeeId) {
+      const currentEmployee = await prisma.employee.findUnique({
+        where: { id: currentEmployeeId },
+        include: { warehouse: true },
+      });
+      if (currentEmployee?.warehouseId && employee.warehouseId !== currentEmployee.warehouseId) {
+        throw ApiError.forbidden('You can only view employees from your assigned warehouse');
+      }
+    }
+  } else if (currentEmployeeRole === 'cashier') {
+    // Seller cannot view Managers or Admins
+    if (employee.role.name === 'admin' || employee.role.name === 'manager') {
+      throw ApiError.forbidden('You do not have permission to view this employee');
+    }
+  }
+  // Admin can view all (no restriction)
+
+  const { pinCode, ...rest } = employee;
   return {
     ...rest,
     hasPin: !!pinCode,
@@ -112,16 +196,6 @@ export async function createEmployee(
     throw ApiError.conflict('Phone number already in use');
   }
 
-  // Check if email already exists (only if email is provided)
-  if (input.email) {
-    const existingEmail = await prisma.employee.findFirst({
-      where: { email: input.email },
-    });
-
-    if (existingEmail) {
-      throw ApiError.conflict('Email already in use');
-    }
-  }
 
   // Verify role exists and check if warehouse is required
   const role = await prisma.role.findUnique({
@@ -157,12 +231,10 @@ export async function createEmployee(
   }
 
   // Admin doesn't require warehouse, but other roles do
-  if (role.name !== 'admin' && !input.warehouseId) {
-    throw ApiError.badRequest('Warehouse is required for non-admin roles');
+  const warehouseIds = input.warehouseIds || [];
+  if (role.name !== 'admin' && !input.warehouseId && warehouseIds.length === 0) {
+    throw ApiError.badRequest('At least one warehouse is required for non-admin roles');
   }
-
-  // Hash password
-  const hashedPassword = await bcrypt.hash(input.password, 10);
 
   // Hash PIN if provided
   let hashedPin = null;
@@ -170,19 +242,33 @@ export async function createEmployee(
     hashedPin = await bcrypt.hash(input.pinCode, 10);
   }
 
+  // Create employee with primary warehouse
   const employee = await prisma.employee.create({
     data: {
-      ...input,
-      password: hashedPassword,
+      phone: input.phone,
       pinCode: hashedPin,
+      fullName: input.fullName,
+      roleId: input.roleId,
+      warehouseId: input.warehouseId || null,
+      isActive: input.isActive ?? true,
+      warehouses: {
+        create: warehouseIds.map((warehouseId) => ({
+          warehouseId,
+        })),
+      },
     },
     include: {
       role: { select: { id: true, name: true } },
       warehouse: { select: { id: true, name: true, code: true } },
+      warehouses: {
+        include: {
+          warehouse: { select: { id: true, name: true, code: true } },
+        },
+      },
     },
   });
 
-  const { password, pinCode, ...rest } = employee;
+  const { pinCode, ...rest } = employee;
   return rest;
 }
 
@@ -205,7 +291,7 @@ export async function updateEmployee(
   if (currentEmployeeRole === 'manager') {
     // Manager cannot modify Managers or Admins
     if (employee.role.name === 'manager' || employee.role.name === 'admin') {
-      throw ApiError.forbidden('You cannot modify Managers or Administrators');
+      throw ApiError.forbidden('You cannot modify Managers or Administrators. You can only manage Sellers assigned to your warehouse.');
     }
 
     // Manager can only modify Sellers from their warehouse
@@ -223,22 +309,21 @@ export async function updateEmployee(
         throw ApiError.forbidden('You can only modify employees from your assigned warehouse');
       }
 
-      // If changing role, ensure it's still a Seller
+      // If changing role, ensure it's still a Seller (cannot promote to Manager or Admin)
       if (input.roleId) {
         const newRole = await prisma.role.findUnique({
           where: { id: input.roleId },
         });
         if (newRole && newRole.name !== 'cashier') {
-          throw ApiError.forbidden('You can only assign the Seller role');
+          throw ApiError.forbidden('You can only assign the Seller role. You cannot promote employees to Manager or Admin.');
         }
       }
-
-      // If changing warehouse, ensure it's still their warehouse
-      if (input.warehouseId && input.warehouseId !== currentEmployee.warehouseId) {
-        throw ApiError.forbidden('You can only assign employees to your assigned warehouse');
-      }
     }
+  } else if (currentEmployeeRole === 'cashier') {
+    // Seller cannot modify any employees
+    throw ApiError.forbidden('You do not have permission to modify employees');
   }
+  // Admin can modify all (no restriction)
 
   // Check phone uniqueness if changing
   if (input.phone && input.phone !== employee.phone) {
@@ -250,15 +335,6 @@ export async function updateEmployee(
     }
   }
 
-  // Check email uniqueness if changing
-  if (input.email && input.email !== employee.email) {
-    const existingEmail = await prisma.employee.findFirst({
-      where: { email: input.email },
-    });
-    if (existingEmail) {
-      throw ApiError.conflict('Email already in use');
-    }
-  }
 
   // Hash new PIN if provided
   let updateData: any = { ...input };
@@ -266,16 +342,63 @@ export async function updateEmployee(
     updateData.pinCode = await bcrypt.hash(input.pinCode, 10);
   }
 
+  // Remove warehouseIds from updateData as we'll handle it separately
+  const warehouseIds = updateData.warehouseIds;
+  delete updateData.warehouseIds;
+
+  // Update employee basic fields
   const updated = await prisma.employee.update({
     where: { id },
     data: updateData,
     include: {
       role: { select: { id: true, name: true } },
       warehouse: { select: { id: true, name: true, code: true } },
+      warehouses: {
+        include: {
+          warehouse: { select: { id: true, name: true, code: true } },
+        },
+      },
     },
   });
 
-  const { password, pinCode, ...rest } = updated;
+  // Update warehouse assignments if provided
+  if (warehouseIds !== undefined) {
+    // Delete existing assignments
+    await prisma.employeeWarehouse.deleteMany({
+      where: { employeeId: id },
+    });
+
+    // Create new assignments
+    if (warehouseIds.length > 0) {
+      await prisma.employeeWarehouse.createMany({
+        data: warehouseIds.map((warehouseId: string) => ({
+          employeeId: id,
+          warehouseId,
+        })),
+      });
+    }
+
+    // Reload employee with updated warehouses
+    const reloaded = await prisma.employee.findUnique({
+      where: { id },
+      include: {
+        role: { select: { id: true, name: true } },
+        warehouse: { select: { id: true, name: true, code: true } },
+        warehouses: {
+          include: {
+            warehouse: { select: { id: true, name: true, code: true } },
+          },
+        },
+      },
+    });
+
+    if (reloaded) {
+      const { pinCode, ...rest } = reloaded;
+      return rest;
+    }
+  }
+
+  const { pinCode, ...rest } = updated;
   return rest;
 }
 
@@ -315,4 +438,5 @@ export async function resetPin(id: string, input: ResetPinInput) {
 
   return { message: 'PIN reset successfully' };
 }
+
 

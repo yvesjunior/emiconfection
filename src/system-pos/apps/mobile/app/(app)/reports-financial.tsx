@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -37,18 +37,35 @@ interface FinancialReport {
   }>;
 }
 
-const periods = [
-  { id: 'day', label: 'Aujourd\'hui', icon: 'today-outline' },
-  { id: 'week', label: 'Cette semaine', icon: 'calendar-outline' },
-  { id: 'month', label: 'Ce mois', icon: 'calendar' },
-  { id: 'year', label: 'Cette année', icon: 'calendar-clear' },
+const months = [
+  'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
 ];
+
+const getDaysInMonth = (year: number, month: number) => {
+  return new Date(year, month + 1, 0).getDate();
+};
+
+const getYears = () => {
+  const currentYear = new Date().getFullYear();
+  const years = [];
+  for (let i = currentYear; i >= currentYear - 4; i--) {
+    years.push(i);
+  }
+  return years;
+};
 
 export default function ReportsFinancialScreen() {
   const router = useRouter();
   const employee = useAuthStore((state) => state.employee);
-  const [selectedPeriod, setSelectedPeriod] = useState<string>('day');
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('all');
+  
+  // Custom date selection - default to current year, month, and day
+  const currentDate = new Date();
+  const [selectedYear, setSelectedYear] = useState<number>(currentDate.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(currentDate.getMonth());
+  const [selectedDay, setSelectedDay] = useState<number | null>(currentDate.getDate());
+  const [selectedWeek, setSelectedWeek] = useState<number | null>(null); // Week number (0-3) within the month
 
   // Fetch warehouses for filter (Admin only)
   const { data: warehousesData } = useQuery({
@@ -62,12 +79,95 @@ export default function ReportsFinancialScreen() {
 
   const warehouses = warehousesData || [];
 
+  // Helper function to get weeks in a month
+  const getWeeksInMonth = useMemo(() => {
+    if (selectedMonth === null) return [];
+    const year = selectedYear;
+    const month = selectedMonth;
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const weeks: { start: number; end: number; label: string }[] = [];
+    
+    // Find the first Monday of the month (or start from day 1)
+    let weekStart = 1;
+    let weekEnd = Math.min(7 - firstDay.getDay() + 1, lastDay.getDate());
+    
+    while (weekStart <= lastDay.getDate()) {
+      weeks.push({
+        start: weekStart,
+        end: weekEnd,
+        label: `${weekStart}-${weekEnd}`,
+      });
+      weekStart = weekEnd + 1;
+      weekEnd = Math.min(weekStart + 6, lastDay.getDate());
+    }
+    
+    return weeks;
+  }, [selectedYear, selectedMonth]);
+
+  // Calculate date range based on selection
+  const dateRange = useMemo(() => {
+    // Custom date selection
+    if (selectedDay !== null && selectedMonth !== null) {
+      // Specific day
+      const start = new Date(selectedYear, selectedMonth, selectedDay);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(selectedYear, selectedMonth, selectedDay);
+      end.setHours(23, 59, 59, 999);
+      return {
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+      };
+    } else if (selectedWeek !== null && selectedMonth !== null) {
+      // Specific week
+      const weeks = getWeeksInMonth;
+      const week = weeks[selectedWeek];
+      if (week) {
+        const start = new Date(selectedYear, selectedMonth, week.start);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(selectedYear, selectedMonth, week.end);
+        end.setHours(23, 59, 59, 999);
+        return {
+          startDate: start.toISOString().split('T')[0],
+          endDate: end.toISOString().split('T')[0],
+        };
+      }
+      // Fallback to month if week not found
+      const start = new Date(selectedYear, selectedMonth, 1);
+      const end = new Date(selectedYear, selectedMonth + 1, 0);
+      end.setHours(23, 59, 59, 999);
+      return {
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+      };
+    } else if (selectedMonth !== null) {
+      // Entire month
+      const start = new Date(selectedYear, selectedMonth, 1);
+      const end = new Date(selectedYear, selectedMonth + 1, 0);
+      end.setHours(23, 59, 59, 999);
+      return {
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+      };
+    } else {
+      // Entire year
+      const start = new Date(selectedYear, 0, 1);
+      const end = new Date(selectedYear, 11, 31);
+      end.setHours(23, 59, 59, 999);
+      return {
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+      };
+    }
+  }, [selectedYear, selectedMonth, selectedDay, selectedWeek, getWeeksInMonth]);
+
   // Fetch financial report
   const { data: report, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['financial-report', selectedPeriod, selectedWarehouseId],
+    queryKey: ['financial-report', dateRange, selectedWarehouseId],
     queryFn: async () => {
       const params = new URLSearchParams();
-      params.append('period', selectedPeriod);
+      params.append('startDate', dateRange.startDate!);
+      params.append('endDate', dateRange.endDate!);
       if (selectedWarehouseId !== 'all') {
         params.append('warehouseId', selectedWarehouseId);
       }
@@ -76,32 +176,40 @@ export default function ReportsFinancialScreen() {
     },
   });
 
-  const renderPeriodButton = (period: typeof periods[0]) => {
-    const isSelected = selectedPeriod === period.id;
-    return (
-      <TouchableOpacity
-        key={period.id}
-        style={[styles.periodButton, isSelected && styles.periodButtonActive]}
-        onPress={() => setSelectedPeriod(period.id)}
-      >
-        <Ionicons
-          name={period.icon as any}
-          size={20}
-          color={isSelected ? colors.textInverse : colors.primary}
-        />
-        <Text
-          style={[styles.periodButtonText, isSelected && styles.periodButtonTextActive]}
-        >
-          {period.label}
-        </Text>
-      </TouchableOpacity>
-    );
+  const availableDays = useMemo(() => {
+    if (selectedMonth === null) return [];
+    const days = getDaysInMonth(selectedYear, selectedMonth);
+    return Array.from({ length: days }, (_, i) => i + 1);
+  }, [selectedYear, selectedMonth]);
+
+
+  const getCustomPeriodLabel = () => {
+    if (selectedDay !== null && selectedMonth !== null) {
+      return `${selectedDay} ${months[selectedMonth]} ${selectedYear}`;
+    } else if (selectedWeek !== null && selectedMonth !== null) {
+      const weeks = getWeeksInMonth;
+      const week = weeks[selectedWeek];
+      if (week) {
+        return `Semaine ${week.label} ${months[selectedMonth]} ${selectedYear}`;
+      }
+      return `${months[selectedMonth]} ${selectedYear}`;
+    } else if (selectedMonth !== null) {
+      return `${months[selectedMonth]} ${selectedYear}`;
+    } else {
+      return `Année ${selectedYear}`;
+    }
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(app)/more');
+          }
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Rapports financiers</Text>
@@ -115,9 +223,211 @@ export default function ReportsFinancialScreen() {
       >
         {/* Period Selector */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Période</Text>
-          <View style={styles.periodButtons}>
-            {periods.map(renderPeriodButton)}
+          <View style={styles.customPeriodContainer}>
+              {/* Year Selector - Horizontal Scrollable */}
+              <View style={styles.selectorSection}>
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false} 
+                  style={styles.horizontalSelector}
+                  contentContainerStyle={styles.horizontalSelectorContent}
+                >
+                  {getYears().map((year) => (
+                    <TouchableOpacity
+                      key={year}
+                      style={[
+                        styles.horizontalButton,
+                        selectedYear === year && styles.horizontalButtonActiveYear,
+                      ]}
+                      onPress={() => {
+                        setSelectedYear(year);
+                        // Reset month, week and day when year changes
+                        setSelectedMonth(null);
+                        setSelectedWeek(null);
+                        setSelectedDay(null);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.horizontalButtonText,
+                          styles.horizontalButtonTextYear,
+                          selectedYear === year && styles.horizontalButtonTextActive,
+                        ]}
+                      >
+                        {year}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+
+              {/* Month Selector - Horizontal Scrollable */}
+              <View style={[styles.selectorSection, styles.selectorSectionTight]}>
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false} 
+                  style={styles.horizontalSelector}
+                  contentContainerStyle={styles.horizontalSelectorContent}
+                >
+                  <TouchableOpacity
+                    style={[
+                      styles.horizontalButton,
+                      selectedMonth === null && styles.horizontalButtonActiveMonth,
+                    ]}
+                    onPress={() => {
+                      setSelectedMonth(null);
+                      setSelectedDay(null);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.horizontalButtonText,
+                        selectedMonth === null && styles.horizontalButtonTextActive,
+                      ]}
+                    >
+                      Tous
+                    </Text>
+                  </TouchableOpacity>
+                  {months.map((month, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={[
+                        styles.horizontalButton,
+                        selectedMonth === index && styles.horizontalButtonActiveMonth,
+                      ]}
+                      onPress={() => {
+                        setSelectedMonth(index);
+                        setSelectedWeek(null);
+                        setSelectedDay(null);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.horizontalButtonText,
+                          selectedMonth === index && styles.horizontalButtonTextActive,
+                        ]}
+                      >
+                        {month.substring(0, 3)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+
+              {/* Week Selector - Horizontal Scrollable (only if month is selected) */}
+              {selectedMonth !== null && (
+                <View style={styles.selectorSection}>
+                  <ScrollView 
+                    horizontal 
+                    showsHorizontalScrollIndicator={false} 
+                    style={styles.horizontalSelector}
+                    contentContainerStyle={styles.horizontalSelectorContent}
+                  >
+                    <TouchableOpacity
+                      style={[
+                        styles.horizontalButton,
+                        selectedWeek === null && selectedDay === null && styles.horizontalButtonActiveWeek,
+                      ]}
+                      onPress={() => {
+                        setSelectedWeek(null);
+                        setSelectedDay(null);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.horizontalButtonText,
+                          selectedWeek === null && selectedDay === null && styles.horizontalButtonTextActive,
+                        ]}
+                      >
+                        Tous
+                      </Text>
+                    </TouchableOpacity>
+                    {getWeeksInMonth.map((week, index) => (
+                      <TouchableOpacity
+                        key={index}
+                        style={[
+                          styles.horizontalButton,
+                          selectedWeek === index && styles.horizontalButtonActiveWeek,
+                        ]}
+                        onPress={() => {
+                          setSelectedWeek(index);
+                          setSelectedDay(null);
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.horizontalButtonText,
+                            selectedWeek === index && styles.horizontalButtonTextActive,
+                          ]}
+                        >
+                          S{index + 1}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {/* Day Selector - Horizontal Scrollable (only if month and week are selected) */}
+              {selectedMonth !== null && selectedWeek !== null && (
+                <View style={styles.selectorSection}>
+                  <ScrollView 
+                    horizontal 
+                    showsHorizontalScrollIndicator={false} 
+                    style={styles.horizontalSelector}
+                    contentContainerStyle={styles.horizontalSelectorContent}
+                  >
+                    <TouchableOpacity
+                      style={[
+                        styles.horizontalButton,
+                        selectedDay === null && styles.horizontalButtonActiveDay,
+                      ]}
+                      onPress={() => setSelectedDay(null)}
+                    >
+                      <Text
+                        style={[
+                          styles.horizontalButtonText,
+                          selectedDay === null && styles.horizontalButtonTextActive,
+                        ]}
+                      >
+                        Tous
+                      </Text>
+                    </TouchableOpacity>
+                    {availableDays.map((day) => {
+                      const weeks = getWeeksInMonth;
+                      const week = weeks[selectedWeek];
+                      if (week && day >= week.start && day <= week.end) {
+                        return (
+                          <TouchableOpacity
+                            key={day}
+                            style={[
+                              styles.horizontalButton,
+                              selectedDay === day && styles.horizontalButtonActiveDay,
+                            ]}
+                            onPress={() => setSelectedDay(day)}
+                          >
+                            <Text
+                              style={[
+                                styles.horizontalButtonText,
+                                selectedDay === day && styles.horizontalButtonTextActive,
+                              ]}
+                            >
+                              {day}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      }
+                      return null;
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
+            {/* Selected Period Display */}
+            <View style={styles.selectedPeriodDisplay}>
+              <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+              <Text style={styles.selectedPeriodText}>{getCustomPeriodLabel()}</Text>
+            </View>
           </View>
         </View>
 
@@ -179,7 +489,7 @@ export default function ReportsFinancialScreen() {
               <View style={[styles.summaryCard, styles.salesCard]}>
                 <View style={styles.summaryCardHeader}>
                   <Ionicons name="trending-up" size={24} color={colors.success} />
-                  <Text style={styles.summaryCardLabel}>Ventes</Text>
+                  <Text style={styles.summaryCardLabel}>Revenus</Text>
                 </View>
                 <Text style={styles.summaryCardValue}>
                   {formatCurrency(report.totalSales)}
@@ -206,7 +516,7 @@ export default function ReportsFinancialScreen() {
                     size={24}
                     color={report.netProfit >= 0 ? colors.success : colors.danger}
                   />
-                  <Text style={styles.summaryCardLabel}>Bénéfice net</Text>
+                  <Text style={styles.summaryCardLabel}>Profit</Text>
                 </View>
                 <Text
                   style={[
@@ -269,7 +579,7 @@ export default function ReportsFinancialScreen() {
                     </View>
                     <View style={styles.warehouseBreakdownDetails}>
                       <View style={styles.breakdownRow}>
-                        <Text style={styles.breakdownLabel}>Ventes:</Text>
+                        <Text style={styles.breakdownLabel}>Revenus:</Text>
                         <Text style={styles.breakdownValue}>
                           {formatCurrency(warehouse.totalSales)}
                         </Text>
@@ -330,7 +640,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   section: {
-    padding: spacing.lg,
+    padding: spacing.xs,
+    paddingLeft: spacing.xs,
     backgroundColor: colors.surface,
     marginTop: spacing.md,
     borderTopWidth: 1,
@@ -344,34 +655,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-  },
-  periodButtons: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    flexWrap: 'wrap',
-  },
-  periodButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: borderRadius.md,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  periodButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  periodButtonText: {
-    fontSize: fontSize.sm,
-    fontWeight: '600',
-    color: colors.primary,
-  },
-  periodButtonTextActive: {
-    color: colors.textInverse,
   },
   warehouseFilters: {
     flexDirection: 'row',
@@ -505,6 +788,87 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     color: colors.textMuted,
     textAlign: 'center',
+  },
+  customPeriodContainer: {
+    gap: spacing.sm,
+  },
+  selectorSection: {
+    marginBottom: 2,
+  },
+  selectorSectionTight: {
+    marginBottom: 2,
+  },
+  horizontalSelector: {
+    paddingVertical: 2,
+  },
+  horizontalSelectorContent: {
+    paddingHorizontal: spacing.xs,
+    paddingLeft: spacing.xs,
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  horizontalButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    marginRight: spacing.sm,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+    minWidth: 45,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  horizontalButtonActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  // Year selection - Blue/Primary
+  horizontalButtonActiveYear: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  // Month selection - Green/Success
+  horizontalButtonActiveMonth: {
+    backgroundColor: colors.success,
+    borderColor: colors.success,
+  },
+  // Week selection - Orange/Warning
+  horizontalButtonActiveWeek: {
+    backgroundColor: colors.warning,
+    borderColor: colors.warning,
+  },
+  // Day selection - Purple/Custom
+  horizontalButtonActiveDay: {
+    backgroundColor: '#8B5CF6', // Purple color
+    borderColor: '#8B5CF6',
+  },
+  horizontalButtonText: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  horizontalButtonTextYear: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+  },
+  horizontalButtonTextActive: {
+    color: colors.textInverse,
+  },
+  selectedPeriodDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.successLight + '20',
+    borderRadius: borderRadius.md,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.success,
+  },
+  selectedPeriodText: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.success,
   },
 });
 

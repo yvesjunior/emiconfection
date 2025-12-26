@@ -288,6 +288,24 @@ export default function ProductsPage() {
     }));
   };
 
+  const selectAllCategories = () => {
+    const allCategoryIds = categories.map((cat) => cat.id);
+    setFormData((prev) => ({
+      ...prev,
+      categoryIds: allCategoryIds,
+    }));
+  };
+
+  const deselectAllCategories = () => {
+    setFormData((prev) => ({
+      ...prev,
+      categoryIds: [],
+    }));
+  };
+
+  const areAllSelected = categories.length > 0 && 
+    categories.every((cat) => formData.categoryIds.includes(cat.id));
+
   const getCategoryName = (categoryId: string) => {
     return categories.find((c) => c.id === categoryId)?.name || categoryId;
   };
@@ -576,6 +594,26 @@ export default function ProductsPage() {
               )}
               {/* Category selector */}
               <div className="border rounded-md max-h-48 overflow-y-auto">
+                {/* Select All / Deselect All Button */}
+                {categories.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={areAllSelected ? deselectAllCategories : selectAllCategories}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium hover:bg-slate-50 text-blue-600 border-b"
+                  >
+                    {areAllSelected ? (
+                      <>
+                        <Check className="h-4 w-4" />
+                        Tout désélectionner
+                      </>
+                    ) : (
+                      <>
+                        <div className="h-4 w-4 border border-slate-400 rounded" />
+                        Tout sélectionner
+                      </>
+                    )}
+                  </button>
+                )}
                 {parentCategories.map((parent) => (
                   <div key={parent.id}>
                     <button

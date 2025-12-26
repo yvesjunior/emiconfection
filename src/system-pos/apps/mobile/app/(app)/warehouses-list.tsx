@@ -167,7 +167,13 @@ export default function WarehousesListScreen() {
       {/* Header */}
       <View style={[styles.header, isTabMode && styles.headerTab]}>
         {!isTabMode ? (
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+          <TouchableOpacity style={styles.backButton} onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace('/(app)/');
+            }
+          }}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
         ) : (

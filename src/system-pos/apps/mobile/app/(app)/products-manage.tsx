@@ -29,14 +29,42 @@ const hapticNotification = (type: Haptics.NotificationFeedbackType) => {
   if (Platform.OS !== 'web') Haptics.notificationAsync(type);
 };
 
+const hapticImpact = (style: Haptics.ImpactFeedbackStyle) => {
+  if (Platform.OS !== 'web') Haptics.impactAsync(style);
+};
+
+const PRODUCT_UNITS = [
+  { value: 'piece', label: 'Pièce' },
+  { value: 'kg', label: 'Kilogramme (kg)' },
+  { value: 'g', label: 'Gramme (g)' },
+  { value: 'litre', label: 'Litre (L)' },
+  { value: 'ml', label: 'Millilitre (mL)' },
+  { value: 'metre', label: 'Mètre (m)' },
+  { value: 'cm', label: 'Centimètre (cm)' },
+  { value: 'm2', label: 'Mètre carré (m²)' },
+  { value: 'm3', label: 'Mètre cube (m³)' },
+  { value: 'boite', label: 'Boîte' },
+  { value: 'paquet', label: 'Paquet' },
+  { value: 'carton', label: 'Carton' },
+  { value: 'unite', label: 'Unité' },
+];
+
 interface Category {
   id: string;
   name: string;
 }
 
+interface Warehouse {
+  id: string;
+  name: string;
+  code: string;
+  type?: 'BOUTIQUE' | 'STOCKAGE';
+}
+
 interface InventoryItem {
   id: string;
   quantity: string;
+  warehouseId?: string;
   warehouse: {
     id: string;
     name: string;
@@ -88,8 +116,11 @@ export default function ProductsManageScreen() {
   const [costPrice, setCostPrice] = useState('');
   const [sellingPrice, setSellingPrice] = useState('');
   const [transportFee, setTransportFee] = useState('');
-  const [minStockLevel, setMinStockLevel] = useState('10');
-  const [stock, setStock] = useState('0');
+  const [unit, setUnit] = useState('piece');
+  const [showUnitPicker, setShowUnitPicker] = useState(false);
+  const [minStockLevel, setMinStockLevel] = useState('5');
+  const [stock, setStock] = useState('0'); // Keep for backward compatibility
+  const [warehouseStocks, setWarehouseStocks] = useState<Record<string, string>>({}); // warehouseId -> stock quantity
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
   const [categorySearch, setCategorySearch] = useState('');
@@ -140,6 +171,33 @@ export default function ProductsManageScreen() {
   });
 
   const categories: Category[] = categoriesData || [];
+
+  // Fetch warehouses - get all warehouses, then filter by employee access
+  const { data: warehousesData } = useQuery({
+    queryKey: ['warehouses', 'product-form'],
+    queryFn: async () => {
+      const res = await api.get('/warehouses?includeInactive=false');
+      return res.data.data;
+    },
+  });
+
+  const allWarehouses = warehousesData || [];
+  
+  // Filter warehouses based on employee access
+  // Admin can access all warehouses, others only their assigned warehouses
+  const availableWarehouses = allWarehouses.filter((w: any) => {
+    if (employee?.role?.name === 'admin') return true;
+    
+    // Check assigned warehouses from EmployeeWarehouse table
+    if (employee?.warehouses && employee.warehouses.length > 0) {
+      return employee.warehouses.some((ew: Warehouse) => ew.id === w.id);
+    }
+    
+    // Fallback to primary warehouseId for backward compatibility
+    if (employee?.warehouse?.id === w.id) return true;
+    
+    return false;
+  });
   
   // Filter categories based on search
   const filteredCategories = categories.filter((cat) =>
@@ -166,9 +224,22 @@ export default function ProductsManageScreen() {
       setCostPrice(productData.costPrice?.toString() || '');
       setSellingPrice(productData.sellingPrice?.toString() || '');
       setTransportFee(productData.transportFee?.toString() || '');
+      setUnit(productData.unit || 'piece');
       setMinStockLevel(productData.minStockLevel?.toString() || '10');
       setStock(productData.stock?.toString() || '0');
       setSelectedCategoryIds(productData.categories?.map((c: Category) => c.id) || []);
+      
+      // Initialize warehouse stocks from inventory
+      if (productData.inventory && Array.isArray(productData.inventory)) {
+        const stocks: Record<string, string> = {};
+        productData.inventory.forEach((inv: InventoryItem) => {
+          const warehouseId = inv.warehouseId || inv.warehouse?.id;
+          if (warehouseId) {
+            stocks[warehouseId] = inv.quantity?.toString() || '0';
+          }
+        });
+        setWarehouseStocks(stocks);
+      }
     }
   }, [productData]);
 
@@ -195,10 +266,16 @@ export default function ProductsManageScreen() {
     onSuccess: () => {
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      // Navigate back to the previous screen
+      // If we can go back, use back(), otherwise go to main screen
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(app)/');
+      }
       Alert.alert(
         'Succès',
-        isEditing ? 'Produit modifié avec succès' : 'Produit créé avec succès',
-        [{ text: 'OK', onPress: () => router.back() }]
+        isEditing ? 'Produit modifié avec succès' : 'Produit créé avec succès'
       );
     },
     onError: (error: any) => {
@@ -396,7 +473,7 @@ export default function ProductsManageScreen() {
       return;
     }
 
-    const data: any = {
+    const productData: any = {
       name: name.trim(),
       sku: sku.trim(),
       barcode: barcode.trim() || null,
@@ -404,13 +481,65 @@ export default function ProductsManageScreen() {
       costPrice: costPrice ? Number(costPrice) : null,
       sellingPrice: Number(sellingPrice),
       transportFee: transportFee ? Number(transportFee) : null,
+      unit: unit.trim() || 'piece',
       minStockLevel: Number(minStockLevel) || 10,
       categoryIds: selectedCategoryIds,
       isActive: true,
-      stock: Number(stock) || 0,
     };
 
-    saveMutation.mutate(data);
+    // For new products, use first warehouse with stock if available
+    if (!isEditing && availableWarehouses.length > 0) {
+      const firstWarehouseWithStock = availableWarehouses.find((w: any) => 
+        warehouseStocks[w.id] && Number(warehouseStocks[w.id]) > 0
+      );
+      if (firstWarehouseWithStock) {
+        productData.warehouseId = firstWarehouseWithStock.id;
+        productData.stock = Number(warehouseStocks[firstWarehouseWithStock.id]) || 0;
+      }
+    }
+
+    saveMutation.mutate(productData, {
+      onSuccess: async (response) => {
+        const savedProductId = isEditing ? productId : response.data.id;
+        
+        // Update stock for all warehouses (including the first one if it wasn't set during creation)
+        const stockUpdateErrors: string[] = [];
+        
+        for (const warehouse of availableWarehouses) {
+          const stockValue = warehouseStocks[warehouse.id];
+          // Update stock if value is provided (including 0)
+          if (stockValue !== undefined && stockValue !== null && stockValue !== '') {
+            const numValue = Number(stockValue);
+            if (!isNaN(numValue) && numValue >= 0) {
+              // Skip if this was already set during creation
+              if (!isEditing && warehouse.id === productData.warehouseId && numValue === productData.stock) {
+                continue;
+              }
+              
+              try {
+                await api.put(`/products/${savedProductId}`, {
+                  warehouseId: warehouse.id,
+                  stock: numValue,
+                });
+              } catch (error: any) {
+                console.error(`Failed to set stock for warehouse ${warehouse.id}:`, error);
+                const errorMessage = error.response?.data?.message || `Erreur lors de la mise à jour du stock pour ${warehouse.name}`;
+                stockUpdateErrors.push(errorMessage);
+              }
+            }
+          }
+        }
+        
+        // Show errors if any occurred
+        if (stockUpdateErrors.length > 0) {
+          Alert.alert(
+            'Erreurs de mise à jour',
+            stockUpdateErrors.join('\n'),
+            [{ text: 'OK' }]
+          );
+        }
+      }
+    });
   };
 
   const toggleCategory = (categoryId: string) => {
@@ -420,6 +549,17 @@ export default function ProductsManageScreen() {
         : [...prev, categoryId]
     );
   };
+
+  const selectAllCategories = () => {
+    setSelectedCategoryIds(filteredCategories.map((cat) => cat.id));
+  };
+
+  const deselectAllCategories = () => {
+    setSelectedCategoryIds([]);
+  };
+
+  const areAllSelected = filteredCategories.length > 0 && 
+    filteredCategories.every((cat) => selectedCategoryIds.includes(cat.id));
 
   if (isEditing && isLoadingProduct) {
     return (
@@ -436,7 +576,14 @@ export default function ProductsManageScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          // Navigate back to the previous screen
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(app)/');
+          }
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -586,6 +733,23 @@ export default function ProductsManageScreen() {
                   )}
                 </View>
 
+                {/* Select All / Deselect All Button */}
+                {filteredCategories.length > 0 && (
+                  <TouchableOpacity
+                    style={styles.selectAllButton}
+                    onPress={areAllSelected ? deselectAllCategories : selectAllCategories}
+                  >
+                    <Ionicons 
+                      name={areAllSelected ? "checkbox" : "square-outline"} 
+                      size={20} 
+                      color={colors.primary} 
+                    />
+                    <Text style={styles.selectAllText}>
+                      {areAllSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
                 {/* Categories List */}
                 {filteredCategories.length > 0 ? (
                   filteredCategories.map((category) => (
@@ -661,44 +825,85 @@ export default function ProductsManageScreen() {
                 keyboardType="numeric"
               />
             </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Unité</Text>
+              <TouchableOpacity
+                style={styles.input}
+                onPress={() => setShowUnitPicker(true)}
+              >
+                <Text style={[styles.inputText, !unit && styles.inputPlaceholder]}>
+                  {unit ? PRODUCT_UNITS.find(u => u.value === unit)?.label || unit : 'Sélectionner une unité'}
+                </Text>
+                <Ionicons name="chevron-down" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Stock Section */}
           <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Stock</Text>
-              {isEditing && productData?.inventory && (
-                <TouchableOpacity
-                  style={styles.viewStocksButton}
-                  onPress={() => setShowStockModal(true)}
-                >
-                  <Ionicons name="eye-outline" size={18} color={colors.primary} />
-                  <Text style={styles.viewStocksButtonText}>Voir par entrepôt</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+            <Text style={styles.sectionTitle}>Stock par entrepôt</Text>
+
+            <Text style={styles.helperText}>
+              Définissez le stock initial pour chaque entrepôt
+            </Text>
+
+            {/* Stock per Warehouse */}
+            {availableWarehouses.length > 0 ? (
+              availableWarehouses.map((warehouse: any) => {
+                const currentStock = warehouseStocks[warehouse.id] || 
+                  (isEditing && productData?.inventory?.find((inv: InventoryItem) => inv.warehouseId === warehouse.id)?.quantity?.toString()) ||
+                  '0';
+                
+                return (
+                  <View key={warehouse.id} style={styles.warehouseStockRow}>
+                    <View style={styles.warehouseStockInfo}>
+                      <Text style={styles.warehouseStockLabel}>{warehouse.name}</Text>
+                      <Text style={styles.warehouseStockCode}>{warehouse.code}</Text>
+                      {warehouse.type && (
+                        <View style={[
+                          styles.warehouseTypeBadge,
+                          warehouse.type === 'BOUTIQUE' ? styles.warehouseTypeBadgeBoutique : styles.warehouseTypeBadgeStockage
+                        ]}>
+                          <Ionicons
+                            name={warehouse.type === 'BOUTIQUE' ? 'storefront' : 'archive'}
+                            size={12}
+                            color={warehouse.type === 'BOUTIQUE' ? colors.primary : colors.success}
+                          />
+                          <Text style={styles.warehouseTypeBadgeText}>
+                            {warehouse.type === 'BOUTIQUE' ? 'Boutique' : 'Stockage'}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.warehouseStockInputContainer}>
+                      <TextInput
+                        style={styles.warehouseStockInput}
+                        value={warehouseStocks[warehouse.id] || currentStock}
+                        onChangeText={(text) => {
+                          setWarehouseStocks(prev => ({
+                            ...prev,
+                            [warehouse.id]: text
+                          }));
+                        }}
+                        placeholder="0"
+                        placeholderTextColor={colors.textMuted}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  </View>
+                );
+              })
+            ) : (
+              <View style={styles.noWarehousesContainer}>
+                <Ionicons name="warning-outline" size={24} color={colors.warning} />
+                <Text style={styles.noWarehousesText}>
+                  Aucun entrepôt assigné. Contactez votre administrateur pour être assigné à un entrepôt.
+                </Text>
+              </View>
+            )}
 
             <View style={styles.row}>
-              <View style={[styles.inputGroup, styles.halfWidth]}>
-                <Text style={styles.label}>Stock {isEditing ? 'actuel' : 'initial'}</Text>
-                <TextInput
-                  style={styles.input}
-                  value={stock}
-                  onChangeText={setStock}
-                  placeholder="0"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="numeric"
-                  editable={true}
-                />
-                {isEditing && productData?.inventory && (
-                  <Text style={styles.helperText}>
-                    Total: {productData.inventory.reduce((sum: number, inv: InventoryItem) => 
-                      sum + Number(inv.quantity || 0), 0
-                    )}
-                  </Text>
-                )}
-              </View>
-
               <View style={[styles.inputGroup, styles.halfWidth]}>
                 <Text style={styles.label}>Stock minimum</Text>
                 <TextInput
@@ -925,6 +1130,57 @@ export default function ProductsManageScreen() {
                 <Text style={styles.emptyStockStateText}>Aucun stock enregistré</Text>
               </View>
             }
+          />
+        </SafeAreaView>
+      </Modal>
+
+      {/* Unit Picker Modal */}
+      <Modal
+        visible={showUnitPicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowUnitPicker(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Sélectionner une unité</Text>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowUnitPicker(false)}
+            >
+              <Ionicons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <FlatList
+            data={PRODUCT_UNITS}
+            keyExtractor={(item) => item.value}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[
+                  styles.categoryOption,
+                  unit === item.value && styles.categoryOptionSelected,
+                ]}
+                onPress={() => {
+                  setUnit(item.value);
+                  setShowUnitPicker(false);
+                  hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.categoryOptionText,
+                    unit === item.value && styles.categoryOptionTextSelected,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+                {unit === item.value && (
+                  <Ionicons name="checkmark" size={18} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            )}
+            contentContainerStyle={styles.modalContent}
           />
         </SafeAreaView>
       </Modal>
@@ -1173,6 +1429,11 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: spacing.xs,
   },
+  helperText: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
+  },
   input: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: borderRadius.md,
@@ -1182,6 +1443,17 @@ const styles = StyleSheet.create({
     color: colors.text,
     borderWidth: 1,
     borderColor: colors.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  inputText: {
+    flex: 1,
+    fontSize: fontSize.md,
+    color: colors.text,
+  },
+  inputPlaceholder: {
+    color: colors.textMuted,
   },
   textArea: {
     minHeight: 80,
@@ -1269,6 +1541,22 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     color: colors.text,
     paddingVertical: spacing.xs,
+  },
+  selectAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.sm,
+  },
+  selectAllText: {
+    fontSize: fontSize.md,
+    color: colors.primary,
+    fontWeight: '600',
   },
   categoryOption: {
     flexDirection: 'row',
@@ -1675,6 +1963,78 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     fontWeight: '700',
     color: colors.textInverse,
+  },
+  warehouseStockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  warehouseStockInfo: {
+    flex: 1,
+  },
+  warehouseStockLabel: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: spacing.xs / 2,
+  },
+  warehouseStockCode: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    marginBottom: spacing.xs / 2,
+  },
+  warehouseTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+    gap: 4,
+  },
+  warehouseTypeBadgeBoutique: {
+    backgroundColor: colors.primaryLight + '20',
+  },
+  warehouseTypeBadgeStockage: {
+    backgroundColor: colors.successLight + '20',
+  },
+  warehouseTypeBadgeText: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+  },
+  warehouseStockInputContainer: {
+    width: 100,
+  },
+  warehouseStockInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    fontSize: fontSize.md,
+    color: colors.text,
+    textAlign: 'center',
+    backgroundColor: colors.background,
+  },
+  noWarehousesContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    backgroundColor: colors.warningLight + '20',
+    borderRadius: borderRadius.md,
+    gap: spacing.sm,
+  },
+  noWarehousesText: {
+    flex: 1,
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
   },
 });
 

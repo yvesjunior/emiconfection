@@ -1,6 +1,8 @@
+import { Decimal } from '@prisma/client/runtime/library';
 import prisma from '../../config/database.js';
 import { ApiError, PaginationQuery } from '../../common/types/index.js';
 import { getPaginationParams, createPaginatedResponse } from '../../common/utils/pagination.js';
+import { requireWarehouseAccess } from '../../common/middleware/auth.js';
 import { CreateProductInput, UpdateProductInput } from './products.schema.js';
 
 interface ProductQuery extends PaginationQuery {
@@ -12,6 +14,9 @@ interface ProductQuery extends PaginationQuery {
 
 export async function getProducts(query: ProductQuery) {
   const { page, limit, skip, sortBy, sortOrder } = getPaginationParams(query);
+
+  // DEBUG: Log warehouseId to help diagnose issues
+  console.log('[getProducts] warehouseId from query:', query.warehouseId);
 
   const where: any = {};
 
@@ -44,18 +49,79 @@ export async function getProducts(query: ProductQuery) {
     where.isActive = true;
   }
 
-  const includeInventory = query.warehouseId
-    ? {
-        inventory: {
-          where: { warehouseId: query.warehouseId },
-          include: { warehouse: { select: { id: true, name: true, code: true, type: true } } },
+  // CRITICAL: If warehouseId is provided, we need to ensure all products show inventory for that warehouse
+  // even if no inventory entry exists (should show 0 stock)
+  if (query.warehouseId) {
+    console.log('[getProducts] Filtering products for warehouse:', query.warehouseId);
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { [sortBy]: sortOrder },
+        include: {
+          categories: {
+            include: {
+              category: { select: { id: true, name: true, parentId: true } },
+            },
+          },
+          inventory: {
+            where: { warehouseId: query.warehouseId },
+            include: { warehouse: { select: { id: true, name: true, code: true, type: true } } },
+          },
         },
+      }),
+      prisma.product.count({ where }),
+    ]);
+
+    // Get warehouse info for virtual inventory entries
+    const warehouse = await prisma.warehouse.findUnique({
+      where: { id: query.warehouseId },
+      select: { id: true, name: true, code: true, type: true },
+    });
+
+    // Transform products to ensure all have inventory entry for the specified warehouse
+    // If no inventory entry exists, create a virtual one with 0 stock
+    const transformedProducts = products.map((product) => {
+      let inventory = product.inventory;
+      
+      // If no inventory entry exists for this warehouse, create a virtual one with 0 stock
+      if (!inventory || inventory.length === 0) {
+        inventory = [{
+          id: `temp-${product.id}-${query.warehouseId}`,
+          productId: product.id,
+          warehouseId: query.warehouseId,
+          quantity: new Decimal(0),
+          minStockLevel: new Decimal(0),
+          maxStockLevel: null,
+          lastRestockedAt: null,
+          createdAt: product.createdAt,
+          updatedAt: product.updatedAt,
+          warehouse: warehouse || {
+            id: query.warehouseId,
+            name: 'Unknown',
+            code: 'UNK',
+            type: 'BOUTIQUE' as const,
+          },
+        }];
       }
-    : {
-        inventory: {
-          include: { warehouse: { select: { id: true, name: true, code: true, type: true } } },
-        },
+
+      return {
+        ...product,
+        categories: product.categories.map((pc) => pc.category),
+        inventory,
       };
+    });
+
+    return createPaginatedResponse(transformedProducts, total, page, limit);
+  }
+
+  // No warehouseId - return all inventory entries
+  const includeInventory = {
+    inventory: {
+      include: { warehouse: { select: { id: true, name: true, code: true, type: true } } },
+    },
+  };
 
   const [products, total] = await Promise.all([
     prisma.product.findMany({
@@ -112,7 +178,7 @@ export async function getProductById(id: string) {
   };
 }
 
-export async function getProductByBarcode(barcode: string) {
+export async function getProductByBarcode(barcode: string, warehouseId?: string) {
   const product = await prisma.product.findUnique({
     where: { barcode },
     include: {
@@ -121,11 +187,18 @@ export async function getProductByBarcode(barcode: string) {
           category: { select: { id: true, name: true, parentId: true } },
         },
       },
-      inventory: {
-        include: {
-          warehouse: { select: { id: true, name: true, code: true, type: true } },
-        },
-      },
+      inventory: warehouseId
+        ? {
+            where: { warehouseId },
+            include: {
+              warehouse: { select: { id: true, name: true, code: true, type: true } },
+            },
+          }
+        : {
+            include: {
+              warehouse: { select: { id: true, name: true, code: true, type: true } },
+            },
+          },
     },
   });
 
@@ -140,7 +213,7 @@ export async function getProductByBarcode(barcode: string) {
   };
 }
 
-export async function createProduct(input: CreateProductInput) {
+export async function createProduct(input: CreateProductInput, employeeId?: string) {
   // Check if SKU already exists
   const existingSku = await prisma.product.findUnique({
     where: { sku: input.sku },
@@ -176,17 +249,12 @@ export async function createProduct(input: CreateProductInput) {
   // Extract stock-related fields
   const { categoryId, categoryIds: _, stock, minStockLevel, warehouseId, ...productData } = input;
 
-  // Get default warehouse if not specified
-  let targetWarehouseId = warehouseId;
-  if (!targetWarehouseId) {
-    const defaultWarehouse = await prisma.warehouse.findFirst({
-      where: { isDefault: true, isActive: true },
-    });
-    if (defaultWarehouse) {
-      targetWarehouseId = defaultWarehouse.id;
-    }
+  // Validate warehouse access if stock and warehouseId are provided
+  if (warehouseId && stock !== undefined && employeeId) {
+    await requireWarehouseAccess(employeeId, warehouseId);
   }
 
+  // Create product globally (no warehouse context needed)
   const product = await prisma.product.create({
     data: {
       sku: productData.sku,
@@ -214,13 +282,15 @@ export async function createProduct(input: CreateProductInput) {
     },
   });
 
-  // Create inventory record if warehouse available
-  if (targetWarehouseId) {
+  // Create inventory record if warehouse and stock are provided
+  // Only create if employee has access to the warehouse
+  if (warehouseId && stock !== undefined && stock > 0) {
+    // Access already validated above
     await prisma.inventory.create({
       data: {
         productId: product.id,
-        warehouseId: targetWarehouseId,
-        quantity: stock || 0,
+        warehouseId: warehouseId,
+        quantity: stock,
         minStockLevel: minStockLevel ?? 1,
       },
     });
@@ -233,7 +303,7 @@ export async function createProduct(input: CreateProductInput) {
   };
 }
 
-export async function updateProduct(id: string, input: UpdateProductInput) {
+export async function updateProduct(id: string, input: UpdateProductInput, employeeId?: string) {
   const product = await prisma.product.findUnique({
     where: { id },
   });
@@ -278,6 +348,11 @@ export async function updateProduct(id: string, input: UpdateProductInput) {
   // Extract category and stock fields from input
   const { categoryId, categoryIds: _, stock, minStockLevel, warehouseId, ...productData } = input;
 
+  // Validate warehouse access if stock and warehouseId are provided
+  if (warehouseId && stock !== undefined && employeeId) {
+    await requireWarehouseAccess(employeeId, warehouseId);
+  }
+
   // Update product and categories in a transaction
   const updated = await prisma.$transaction(async (tx) => {
     // Update product fields
@@ -303,38 +378,26 @@ export async function updateProduct(id: string, input: UpdateProductInput) {
     }
 
     // Update stock if provided
-    if (stock !== undefined) {
-      // Get target warehouse
-      let targetWarehouseId = warehouseId;
-      if (!targetWarehouseId) {
-        const defaultWarehouse = await tx.warehouse.findFirst({
-          where: { isDefault: true, isActive: true },
-        });
-        if (defaultWarehouse) {
-          targetWarehouseId = defaultWarehouse.id;
-        }
-      }
-
-      if (targetWarehouseId) {
-        await tx.inventory.upsert({
-          where: {
-            productId_warehouseId: {
-              productId: id,
-              warehouseId: targetWarehouseId,
-            },
-          },
-          update: {
-            quantity: stock,
-            ...(minStockLevel !== undefined && { minStockLevel }),
-          },
-          create: {
+    if (stock !== undefined && warehouseId) {
+      // Access already validated above
+      await tx.inventory.upsert({
+        where: {
+          productId_warehouseId: {
             productId: id,
-            warehouseId: targetWarehouseId,
-            quantity: stock,
-            minStockLevel: minStockLevel ?? 1,
+            warehouseId: warehouseId,
           },
-        });
-      }
+        },
+        update: {
+          quantity: stock,
+          ...(minStockLevel !== undefined && { minStockLevel }),
+        },
+        create: {
+          productId: id,
+          warehouseId: warehouseId,
+          quantity: stock,
+          minStockLevel: minStockLevel ?? 1,
+        },
+      });
     }
 
     // Fetch updated product with categories

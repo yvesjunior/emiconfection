@@ -102,17 +102,42 @@ export default function POSScreen() {
     },
   });
 
-  // Fetch products
+  // Fetch products - ALWAYS filter by current warehouse to show correct quantities
   const { data: productsData, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['products', search, selectedCategories],
+    queryKey: ['products', search, selectedCategories, currentWarehouse?.id],
     queryFn: async () => {
       const params = new URLSearchParams({ limit: '50' });
       if (search) params.append('search', search);
+      // CRITICAL: Always include warehouseId to get correct inventory quantities
+      if (currentWarehouse?.id) {
+        params.append('warehouseId', currentWarehouse.id);
+        console.log('[POS] Fetching products for warehouse:', currentWarehouse.id, currentWarehouse.name);
+      } else {
+        console.warn('[POS] No warehouse selected - cannot fetch products');
+      }
       // Support multiple categories
       selectedCategories.forEach(catId => params.append('categoryId', catId));
-      const res = await api.get(`/products?${params}`);
+      const url = `/products?${params}`;
+      console.log('[POS] Fetching products from:', url);
+      const res = await api.get(url);
+      console.log('[POS] Received products:', res.data.data?.length || 0, 'items');
+      // Log first product's inventory for debugging
+      if (res.data.data && res.data.data.length > 0) {
+        const firstProduct = res.data.data[0];
+        console.log('[POS] First product inventory:', {
+          name: firstProduct.name,
+          sku: firstProduct.sku,
+          inventoryLength: firstProduct.inventory?.length || 0,
+          inventory: firstProduct.inventory?.map((inv: any) => ({
+            warehouseId: inv.warehouse?.id,
+            warehouseName: inv.warehouse?.name,
+            quantity: Number(inv.quantity || 0),
+          })),
+        });
+      }
       return res.data.data;
     },
+    enabled: !!currentWarehouse?.id, // Don't fetch products if no warehouse selected
   });
 
   const categories: Category[] = categoriesData || [];
@@ -191,11 +216,17 @@ export default function POSScreen() {
         }, 100);
       }
     }
-  }, [addItem, appMode, router, getCartQuantity, isBoutiqueWarehouse]);
+  }, [addItem, appMode, router, getCartQuantity, getStock, isBoutiqueWarehouse, currentWarehouse]);
 
   const handleBarcodeScan = useCallback(async (barcode: string, mode: ScanMode) => {
+    if (!currentWarehouse?.id) {
+      Alert.alert('Erreur', 'Aucun entrepôt sélectionné. Veuillez sélectionner un entrepôt.');
+      return;
+    }
+
     try {
-      const response = await api.get(`/products/barcode/${barcode}`);
+      // Include warehouseId to get correct inventory quantities
+      const response = await api.get(`/products/barcode/${barcode}?warehouseId=${currentWarehouse.id}`);
       const product = response.data.data;
       
       if (mode === 'sell') {
@@ -232,23 +263,68 @@ export default function POSScreen() {
         Alert.alert('Erreur', 'Une erreur est survenue lors de la recherche');
       }
     }
-  }, [handleAddToCart, router]);
+  }, [handleAddToCart, router, currentWarehouse]);
 
   // Get stock available in the current connected warehouse
-  const getStock = (product: Product) => {
-    if (!currentWarehouse) return 0;
-    
-    // If product has inventory by warehouse, use that
-    if (product.inventory && product.inventory.length > 0) {
-      const warehouseInventory = product.inventory.find(
-        (inv) => inv.warehouse.id === currentWarehouse.id
-      );
-      return warehouseInventory ? Number(warehouseInventory.quantity || 0) : 0;
+  // CRITICAL: Always use the current warehouse to ensure correct quantities
+  const getStock = useCallback((product: Product) => {
+    if (!currentWarehouse) {
+      console.warn('[getStock] No warehouse selected - cannot determine stock');
+      return 0;
     }
     
-    // Fallback to product.stock
-    return product.stock || 0;
-  };
+    // DEBUG: Log product and warehouse info
+    console.log(`[getStock] Checking stock for product ${product.name} (${product.sku}) in warehouse ${currentWarehouse.name} (${currentWarehouse.id})`);
+    console.log(`[getStock] Product inventory:`, {
+      hasInventory: !!product.inventory,
+      inventoryLength: product.inventory?.length || 0,
+      inventoryEntries: product.inventory?.map((inv: any) => ({
+        warehouseId: inv.warehouse?.id,
+        warehouseName: inv.warehouse?.name,
+        quantity: Number(inv.quantity || 0),
+      })),
+    });
+    
+    // When warehouseId is passed to API, inventory should always contain at least one entry
+    // (even if virtual with 0 stock) for the specified warehouse
+    if (product.inventory && product.inventory.length > 0) {
+      // Find inventory entry for the current warehouse
+      // Try multiple ways to match: by warehouse.id, by warehouseId field, or by warehouse name
+      const warehouseInventory = product.inventory.find(
+        (inv: any) => {
+          const matchesById = inv.warehouse?.id === currentWarehouse.id;
+          const matchesByWarehouseId = inv.warehouseId === currentWarehouse.id;
+          const matchesByName = inv.warehouse?.name === currentWarehouse.name;
+          return matchesById || matchesByWarehouseId || matchesByName;
+        }
+      );
+      
+      if (warehouseInventory) {
+        // Return the quantity (should always be a number, even if 0)
+        const qty = Number(warehouseInventory.quantity || 0);
+        console.log(`[getStock] Found inventory for ${product.name}: ${qty} units`);
+        return qty;
+      }
+      
+      // If no matching inventory found, log warning and return 0
+      // This should not happen if API is working correctly
+      console.warn(
+        `[getStock] Product ${product.name} (${product.sku}) has ${product.inventory.length} inventory entries but none match warehouse ${currentWarehouse.name} (${currentWarehouse.id})`
+      );
+      console.warn(`[getStock] Available inventory warehouses:`, product.inventory.map((inv: any) => ({
+        id: inv.warehouse?.id,
+        name: inv.warehouse?.name,
+      })));
+      return 0;
+    }
+    
+    // Fallback: if no inventory array at all, return 0
+    // This should not happen when warehouseId is passed to API
+    console.warn(
+      `[getStock] Product ${product.name} (${product.sku}) has no inventory data for warehouse ${currentWarehouse.name}`
+    );
+    return 0;
+  }, [currentWarehouse]);
 
   // Check if current connected warehouse is a Boutique
   const isBoutiqueWarehouse = currentWarehouse?.type === 'BOUTIQUE' || (!currentWarehouse?.type && currentWarehouse);
@@ -367,9 +443,17 @@ export default function POSScreen() {
       <View style={styles.header}>
         <View>
           <Text style={styles.greeting}>Bonjour, {employee?.fullName?.split(' ')[0]}</Text>
-          <Text style={[styles.shiftInfo, appMode === 'manage' && styles.shiftInfoManage]}>
-            {appMode === 'manage' ? '✏️ Mode Gestion' : currentWarehouse?.name || 'POS Mobile'}
-          </Text>
+          <View style={styles.warehouseInfo}>
+            <Ionicons 
+              name={appMode === 'manage' ? 'create-outline' : 'storefront'} 
+              size={18} 
+              color={appMode === 'manage' ? colors.success : colors.primary} 
+              style={styles.warehouseIcon}
+            />
+            <Text style={[styles.shiftInfo, appMode === 'manage' && styles.shiftInfoManage]}>
+              {appMode === 'manage' ? 'Mode Gestion' : currentWarehouse?.name || 'POS Mobile'}
+            </Text>
+          </View>
         </View>
         {appMode === 'sell' ? (
           <TouchableOpacity
@@ -554,16 +638,43 @@ export default function POSScreen() {
                 ? 'Aucun filtre actif' 
                 : `${selectedCategories.length} filtre${selectedCategories.length > 1 ? 's' : ''} actif${selectedCategories.length > 1 ? 's' : ''}`}
             </Text>
-            {selectedCategories.length > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  setSelectedCategories([]);
-                  hapticImpact(Haptics.ImpactFeedbackStyle.Light);
-                }}
-              >
-                <Text style={styles.clearButton}>Effacer tout</Text>
-              </TouchableOpacity>
-            )}
+            <View style={styles.modalActions}>
+              {categories.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    const allSelected = categories.every((cat: Category) => selectedCategories.includes(cat.id));
+                    if (allSelected) {
+                      setSelectedCategories([]);
+                    } else {
+                      setSelectedCategories(categories.map((cat: Category) => cat.id));
+                    }
+                    hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                  style={styles.selectAllButton}
+                >
+                  <Ionicons 
+                    name={categories.every((cat: Category) => selectedCategories.includes(cat.id)) ? "checkbox" : "square-outline"} 
+                    size={18} 
+                    color={colors.primary} 
+                  />
+                  <Text style={styles.selectAllText}>
+                    {categories.every((cat: Category) => selectedCategories.includes(cat.id)) 
+                      ? 'Tout désélectionner' 
+                      : 'Tout sélectionner'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {selectedCategories.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setSelectedCategories([]);
+                    hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                >
+                  <Text style={styles.clearButton}>Effacer tout</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
 
           <ScrollView style={styles.modalContent}>
@@ -817,14 +928,22 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   greeting: {
-    fontSize: fontSize.xl,
-    fontWeight: '700',
-    color: colors.text,
+    fontSize: fontSize.md,
+    fontWeight: '400',
+    color: colors.textSecondary,
+  },
+  warehouseInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  warehouseIcon: {
+    marginRight: 6,
   },
   shiftInfo: {
-    fontSize: fontSize.sm,
-    color: colors.textSecondary,
-    marginTop: 2,
+    fontSize: fontSize.lg,
+    fontWeight: '600',
+    color: colors.primary,
   },
   shiftInfoManage: {
     color: colors.success,
@@ -984,6 +1103,21 @@ const styles = StyleSheet.create({
   modalSubtitle: {
     fontSize: fontSize.sm,
     color: colors.textSecondary,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  selectAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  selectAllText: {
+    fontSize: fontSize.sm,
+    color: colors.primary,
+    fontWeight: '600',
   },
   clearButton: {
     fontSize: fontSize.sm,

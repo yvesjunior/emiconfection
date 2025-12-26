@@ -18,9 +18,10 @@ const queryClient = new QueryClient({
 export default function RootLayout() {
   const loadStoredAuth = useAuthStore((state) => state.loadStoredAuth);
   const employee = useAuthStore((state) => state.employee);
-  const hasPermission = useAuthStore((state) => state.hasPermission);
   const setCanSwitchMode = useAppModeStore((state) => state.setCanSwitchMode);
   const loadStoredMode = useAppModeStore((state) => state.loadStoredMode);
+  const mode = useAppModeStore((state) => state.mode);
+  const setMode = useAppModeStore((state) => state.setMode);
 
   useEffect(() => {
     // Load auth and mode with timeout to prevent blocking
@@ -43,12 +44,19 @@ export default function RootLayout() {
   }, []);
 
   // Update canSwitchMode when employee changes (including after reload)
+  // Only Admin and Manager can switch modes, Seller (cashier) cannot
   useEffect(() => {
     if (employee) {
-      const canManage = hasPermission('products:create') || hasPermission('products:update');
-      setCanSwitchMode(canManage);
+      const roleName = employee.role?.name;
+      const canSwitch = roleName === 'admin' || roleName === 'manager';
+      setCanSwitchMode(canSwitch);
+      
+      // If user is a seller and somehow in manage mode, force switch to sell
+      if (roleName === 'cashier' && mode === 'manage') {
+        setMode('sell');
+      }
     }
-  }, [employee]);
+  }, [employee, setCanSwitchMode, mode, setMode]);
 
   return (
     <QueryClientProvider client={queryClient}>

@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  ScrollView,
   TouchableOpacity,
   Alert,
   ActivityIndicator,
@@ -15,7 +16,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCartStore, CartItem } from '../../src/store/cart';
 import { useAuthStore } from '../../src/store/auth';
 import { useParkedCartsStore, ParkedCart } from '../../src/store/parkedCarts';
@@ -44,6 +45,7 @@ const TAX_RATE = 0; // No VAT for now
 
 export default function CartScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState<string>('cash');
   const [cashReceived, setCashReceived] = useState<string>('');
@@ -70,6 +72,8 @@ export default function CartScreen() {
 
   // Get employee for receipt
   const employee = useAuthStore((state) => state.employee);
+  const getEffectiveWarehouse = useAuthStore((state) => state.getEffectiveWarehouse);
+  const currentWarehouse = getEffectiveWarehouse();
   
   // Parked carts
   const parkedCarts = useParkedCartsStore((state) => state.parkedCarts);
@@ -280,6 +284,97 @@ export default function CartScreen() {
     discountValue: storeDiscountValue,
   } = useCartStore();
 
+  // Fetch products to get current stock levels for validation
+  const { data: productsData, isLoading: isLoadingProducts } = useQuery({
+    queryKey: ['products', 'cart-validation', currentWarehouse?.id],
+    queryFn: async () => {
+      if (!currentWarehouse?.id) return [];
+      const params = new URLSearchParams({ limit: '1000' }); // Get all products for validation
+      params.append('warehouseId', currentWarehouse.id);
+      const res = await api.get(`/products?${params}`);
+      return res.data.data || [];
+    },
+    enabled: !!currentWarehouse?.id,
+    staleTime: 0, // Always fetch fresh data for stock validation
+    cacheTime: 0, // Don't cache to ensure we always have latest stock
+  });
+
+  const products = productsData || [];
+
+  // Get current stock for a product in the current warehouse
+  const getProductStock = (productId: string): number => {
+    if (!currentWarehouse?.id) {
+      console.warn('[getProductStock] No warehouse selected');
+      return 0;
+    }
+
+    const product = products.find((p: any) => p.id === productId);
+    if (!product) {
+      console.warn(`[getProductStock] Product ${productId} not found in products list`);
+      return 0;
+    }
+    
+    if (!product.inventory || product.inventory.length === 0) {
+      console.warn(`[getProductStock] Product ${productId} has no inventory data`);
+      return 0;
+    }
+    
+    // Find inventory entry for current warehouse
+    const inventory = product.inventory.find(
+      (inv: any) => {
+        const warehouseId = inv.warehouse?.id || inv.warehouseId;
+        return warehouseId === currentWarehouse.id;
+      }
+    );
+    
+    if (!inventory) {
+      console.warn(`[getProductStock] No inventory found for product ${productId} in warehouse ${currentWarehouse.id}`);
+      return 0;
+    }
+    
+    const stock = Number(inventory.quantity || 0);
+    console.log(`[getProductStock] Product ${product.name} (${productId}) stock in ${currentWarehouse.name}: ${stock}`);
+    return stock;
+  };
+
+  // Validate and update quantity with stock check
+  const handleUpdateQuantity = (productId: string, newQuantity: number) => {
+    if (newQuantity <= 0) {
+      updateQuantity(productId, 0);
+      return;
+    }
+
+    // If products are still loading, wait a moment and try again
+    if (isLoadingProducts) {
+      Alert.alert(
+        'Chargement...',
+        'Veuillez patienter pendant le chargement des données de stock.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    // Get current stock for this product in the current warehouse
+    const availableStock = getProductStock(productId);
+    
+    // CRITICAL: Simple validation - new quantity must not exceed available stock
+    if (newQuantity > availableStock) {
+      Alert.alert(
+        'Stock insuffisant',
+        `Stock disponible dans l'entrepôt "${currentWarehouse?.name || 'actuel'}": ${availableStock} unités.\n\n` +
+        `Quantité demandée: ${newQuantity} unités.\n` +
+        `Quantité maximale autorisée: ${availableStock} unités.`,
+        [{ text: 'OK' }]
+      );
+      hapticImpact(Haptics.ImpactFeedbackStyle.Heavy);
+      return;
+    }
+
+    // Stock is sufficient, update quantity
+    updateQuantity(productId, newQuantity);
+    hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+  };
+
   // Sync discount state with store
   const handleApplyDiscount = () => {
     const value = parseFloat(discountValue) || 0;
@@ -346,6 +441,33 @@ export default function CartScreen() {
   const handleCheckout = async () => {
     if (items.length === 0) {
       Alert.alert('Panier vide', 'Veuillez ajouter des articles au panier.');
+      return;
+    }
+
+    // CRITICAL: Validate stock availability before checkout
+    if (!currentWarehouse?.id) {
+      Alert.alert('Erreur', 'Aucun entrepôt sélectionné. Veuillez sélectionner un entrepôt.');
+      return;
+    }
+
+    // Check stock for all items in cart
+    const stockIssues: string[] = [];
+    for (const item of items) {
+      const availableStock = getProductStock(item.productId);
+      if (item.quantity > availableStock) {
+        stockIssues.push(
+          `${item.name}: Stock disponible ${availableStock}, Quantité demandée ${item.quantity}`
+        );
+      }
+    }
+
+    if (stockIssues.length > 0) {
+      Alert.alert(
+        'Stock insuffisant',
+        `Les quantités suivantes dépassent le stock disponible dans l'entrepôt "${currentWarehouse.name}":\n\n${stockIssues.join('\n')}\n\nVeuillez ajuster les quantités.`,
+        [{ text: 'OK' }]
+      );
+      hapticNotification(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
@@ -463,6 +585,12 @@ export default function CartScreen() {
       const sale = response.data.data;
 
       hapticNotification(Haptics.NotificationFeedbackType.Success);
+      
+      // Invalidate queries to refresh product and inventory data
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      
       clearCart();
       setCashReceived('');
       setShowCashInput(false);
@@ -549,8 +677,7 @@ export default function CartScreen() {
           <TouchableOpacity
             style={styles.quantityButton}
             onPress={() => {
-              updateQuantity(item.productId, item.quantity - 1);
-              hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+              handleUpdateQuantity(item.productId, item.quantity - 1);
             }}
           >
             <Ionicons name="remove" size={18} color={colors.text} />
@@ -559,8 +686,7 @@ export default function CartScreen() {
           <TouchableOpacity
             style={styles.quantityButton}
             onPress={() => {
-              updateQuantity(item.productId, item.quantity + 1);
-              hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+              handleUpdateQuantity(item.productId, item.quantity + 1);
             }}
           >
             <Ionicons name="add" size={18} color={colors.text} />
@@ -581,7 +707,6 @@ export default function CartScreen() {
 
   const paymentMethods = [
     { id: 'cash', name: 'Espèces', icon: 'cash-outline' },
-    { id: 'card', name: 'Carte', icon: 'card-outline' },
     { id: 'mobile_money', name: 'Mobile', icon: 'phone-portrait-outline' },
   ];
 
@@ -637,6 +762,13 @@ export default function CartScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Warehouse Name Bar */}
+      {currentWarehouse && (
+        <View style={styles.warehouseBar}>
+          <Ionicons name="storefront" size={18} color={colors.primary} style={styles.warehouseBarIcon} />
+          <Text style={styles.warehouseBarName}>{currentWarehouse.name}</Text>
+        </View>
+      )}
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
@@ -685,23 +817,28 @@ export default function CartScreen() {
         </View>
       </View>
 
-      {/* Offline Indicator */}
-      {(!isOnline || pendingCount > 0) && (
-        <View style={[styles.offlineBar, isOnline && styles.syncBar]}>
-          <Ionicons
-            name={isOnline ? 'cloud-upload-outline' : 'cloud-offline-outline'}
-            size={16}
-            color={isOnline ? colors.warning : colors.textInverse}
-          />
-          <Text style={[styles.offlineText, isOnline && styles.syncText]}>
-            {!isOnline
-              ? 'Mode hors ligne - Les ventes seront synchronisées'
-              : `${pendingCount} vente(s) en attente de synchronisation`}
-          </Text>
-        </View>
-      )}
+      <ScrollView 
+        style={styles.scrollContent}
+        contentContainerStyle={styles.scrollContentContainer}
+        showsVerticalScrollIndicator={true}
+      >
+        {/* Offline Indicator */}
+        {(!isOnline || pendingCount > 0) && (
+          <View style={[styles.offlineBar, isOnline && styles.syncBar]}>
+            <Ionicons
+              name={isOnline ? 'cloud-upload-outline' : 'cloud-offline-outline'}
+              size={16}
+              color={isOnline ? colors.warning : colors.textInverse}
+            />
+            <Text style={[styles.offlineText, isOnline && styles.syncText]}>
+              {!isOnline
+                ? 'Mode hors ligne - Les ventes seront synchronisées'
+                : `${pendingCount} vente(s) en attente de synchronisation`}
+            </Text>
+          </View>
+        )}
 
-      {/* Customer Selection */}
+        {/* Customer Selection */}
       {items.length > 0 && (
         <TouchableOpacity
           style={styles.customerSelector}
@@ -805,13 +942,13 @@ export default function CartScreen() {
         </View>
       ) : (
         <>
-          <FlatList
-            data={items}
-            keyExtractor={(item) => item.productId}
-            renderItem={renderCartItem}
-            contentContainerStyle={styles.cartList}
-            showsVerticalScrollIndicator={false}
-          />
+          <View style={styles.cartList}>
+            {items.map((item) => (
+              <View key={item.productId}>
+                {renderCartItem({ item })}
+              </View>
+            ))}
+          </View>
 
           {/* Payment Methods */}
           <View style={styles.paymentSection}>
@@ -1033,6 +1170,7 @@ export default function CartScreen() {
           </View>
         </>
       )}
+      </ScrollView>
 
       {/* Customer Selection Modal */}
       <Modal
@@ -1535,6 +1673,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  scrollContent: {
+    flex: 1,
+  },
+  scrollContentContainer: {
+    paddingBottom: spacing.xl,
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1544,6 +1688,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  warehouseBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    backgroundColor: colors.primaryLight + '15',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  warehouseBarIcon: {
+    marginRight: 6,
+  },
+  warehouseBarName: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.primary,
   },
   headerTitle: {
     fontSize: fontSize.lg,

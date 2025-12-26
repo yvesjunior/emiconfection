@@ -57,6 +57,7 @@ export default function MoreScreen() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [showWarehouseModal, setShowWarehouseModal] = useState(false);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null);
+  const [pendingModeSwitch, setPendingModeSwitch] = useState<'sell' | 'manage' | null>(null);
   
   const currentWarehouse = getEffectiveWarehouse();
 
@@ -108,6 +109,77 @@ export default function MoreScreen() {
       return;
     }
     const newMode = mode === 'sell' ? 'manage' : 'sell';
+    
+    // If switching to sell mode and current warehouse is STOCKAGE, find a BOUTIQUE warehouse
+    if (newMode === 'sell' && currentWarehouse?.type === 'STOCKAGE') {
+      // Find available BOUTIQUE warehouses (filtered by employee access)
+      const boutiqueWarehouses = allWarehouses.filter((w: Warehouse) => {
+        if (!w.isActive) return false;
+        if (w.type !== 'BOUTIQUE' && w.type) return false;
+        
+        // Check employee access
+        if (employee?.role?.name === 'admin') return true;
+        return employee?.warehouses?.some((ew: Warehouse) => ew.id === w.id) ||
+               employee?.warehouse?.id === w.id;
+      });
+      
+      if (boutiqueWarehouses.length === 0) {
+        Alert.alert(
+          'Aucun entrepôt Boutique disponible',
+          'Aucun entrepôt de type Boutique n\'est disponible. Impossible de passer en mode Vente.'
+        );
+        return;
+      }
+      
+      // If only one BOUTIQUE warehouse, switch automatically
+      if (boutiqueWarehouses.length === 1) {
+        await setSelectedWarehouse(boutiqueWarehouses[0]);
+        await setMode(newMode);
+        hapticImpact();
+        Alert.alert(
+          'Entrepôt changé',
+          `Passage en mode Vente. Entrepôt changé vers ${boutiqueWarehouses[0].name} (Boutique).`
+        );
+        router.replace('/' as any);
+        return;
+      }
+      
+      // If multiple BOUTIQUE warehouses, show selection modal
+      setPendingModeSwitch(newMode);
+      setSelectedWarehouseId(null);
+      setShowWarehouseModal(true);
+      return;
+    }
+    
+    // If switching to manage mode, check if we need to show warehouse selection
+    // Only show modal if user has multiple assigned warehouses and current warehouse might not be suitable
+    if (newMode === 'manage') {
+      // Filter warehouses for manage mode (all assigned warehouses)
+      const manageWarehouses = allWarehouses.filter((w: Warehouse) => {
+        if (!w.isActive) return false;
+        if (employee?.role?.name === 'admin') return true;
+        return employee?.warehouses?.some((ew: Warehouse) => ew.id === w.id) ||
+               employee?.warehouse?.id === w.id;
+      });
+      
+      // If current warehouse is not in assigned warehouses, show selection
+      const hasCurrentWarehouse = manageWarehouses.some((w: Warehouse) => w.id === currentWarehouse?.id);
+      
+      if (!hasCurrentWarehouse && manageWarehouses.length > 0) {
+        // Current warehouse not accessible in manage mode, show selection
+        setPendingModeSwitch(newMode);
+        setSelectedWarehouseId(null);
+        setShowWarehouseModal(true);
+        return;
+      }
+      
+      // Current warehouse is fine, or user only has one warehouse, just switch mode
+      await setMode(newMode);
+      hapticImpact();
+      router.replace('/' as any);
+      return;
+    }
+    
     await setMode(newMode);
     hapticImpact();
     // Navigate to main screen to refresh tabs properly
@@ -126,15 +198,32 @@ export default function MoreScreen() {
   const allWarehouses: Warehouse[] = warehousesData || [];
   
   // Filter warehouses based on mode and assigned warehouses
-  // For now, we show all active warehouses, but filter by type based on mode
-  // Later, we can filter by assigned warehouses when API supports it
+  // Admin can access all warehouses, others only their assigned warehouses
   const availableWarehouses = allWarehouses.filter((w: Warehouse) => {
     if (!w.isActive) return false;
+    
+    // Admin can access all warehouses
+    if (employee?.role?.name === 'admin') {
+      // In sell mode, only show BOUTIQUE warehouses
+      if (mode === 'sell') {
+        return w.type === 'BOUTIQUE' || !w.type;
+      }
+      // In manage mode, show all warehouses
+      return true;
+    }
+    
+    // Non-admin: check assigned warehouses
+    const hasAccess = employee?.warehouses?.some((ew: Warehouse) => ew.id === w.id) ||
+                      employee?.warehouse?.id === w.id;
+    
+    if (!hasAccess) return false;
+    
     // In sell mode, only show BOUTIQUE warehouses
     if (mode === 'sell') {
       return w.type === 'BOUTIQUE' || !w.type;
     }
-    // In manage mode, show all warehouses
+    
+    // In manage mode, show all assigned warehouses
     return true;
   });
 
@@ -150,11 +239,17 @@ export default function MoreScreen() {
   const handleWarehouseConfirm = async () => {
     if (!selectedWarehouseId) return;
     
-    const selectedWarehouse = availableWarehouses.find((w: Warehouse) => w.id === selectedWarehouseId);
+    // Determine which warehouses list to use based on context
+    const warehousesToSearch = pendingModeSwitch === 'sell' 
+      ? allWarehouses.filter((w: Warehouse) => w.isActive && (w.type === 'BOUTIQUE' || !w.type))
+      : availableWarehouses;
+    
+    const selectedWarehouse = warehousesToSearch.find((w: Warehouse) => w.id === selectedWarehouseId);
     if (!selectedWarehouse) return;
     
     // Check if switching to STOCKAGE in sell mode
-    if (mode === 'sell' && selectedWarehouse.type === 'STOCKAGE') {
+    const currentMode = pendingModeSwitch || mode;
+    if (currentMode === 'sell' && selectedWarehouse.type === 'STOCKAGE') {
       Alert.alert(
         'Changement impossible',
         'Vous ne pouvez pas vous connecter à un entrepôt de type Stockage en mode Vente. Veuillez passer en mode Gestion pour gérer les entrepôts Stockage.'
@@ -162,12 +257,31 @@ export default function MoreScreen() {
       return;
     }
     
+    // Clear cart when switching warehouse (only if warehouse actually changes)
+    if (currentWarehouse?.id !== selectedWarehouse.id) {
+      clearCart();
+    }
+    
     await setSelectedWarehouse(selectedWarehouse);
     hapticNotification(Haptics.NotificationFeedbackType.Success);
     setShowWarehouseModal(false);
-    Alert.alert('Succès', `Entrepôt changé vers ${selectedWarehouse.name}`, [
-      { text: 'OK', onPress: () => router.replace('/' as any) }
-    ]);
+    
+    // If this was a mode switch, complete the mode switch
+    if (pendingModeSwitch) {
+      await setMode(pendingModeSwitch);
+      hapticImpact();
+      const modeName = pendingModeSwitch === 'sell' ? 'Vente' : 'Gestion';
+      setPendingModeSwitch(null);
+      Alert.alert(
+        'Mode et entrepôt changés',
+        `Passage en mode ${modeName}. Entrepôt changé vers ${selectedWarehouse.name}${selectedWarehouse.type === 'BOUTIQUE' ? ' (Boutique)' : ''}.`,
+        [{ text: 'OK', onPress: () => router.replace('/' as any) }]
+      );
+    } else {
+      Alert.alert('Succès', `Entrepôt changé vers ${selectedWarehouse.name}`, [
+        { text: 'OK', onPress: () => router.replace('/' as any) }
+      ]);
+    }
   };
 
   const handleLogout = () => {
@@ -639,23 +753,51 @@ export default function MoreScreen() {
           <SafeAreaView style={styles.modalContainer}>
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.modalTitle}>Changer d'entrepôt</Text>
+                <Text style={styles.modalTitle}>
+                  {pendingModeSwitch === 'sell' 
+                    ? 'Sélectionner un entrepôt Boutique'
+                    : 'Changer d\'entrepôt'}
+                </Text>
                 <Text style={styles.modalSubtitle}>
-                  {mode === 'manage' 
-                    ? 'Mode Gestion : Tous les entrepôts disponibles'
-                    : 'Mode Vente : Seuls les entrepôts Boutique sont disponibles'}
+                  {pendingModeSwitch === 'sell'
+                    ? 'Passage en mode Vente : Veuillez choisir un entrepôt Boutique'
+                    : pendingModeSwitch === 'manage'
+                      ? 'Passage en mode Gestion : Veuillez choisir un entrepôt'
+                      : mode === 'manage' 
+                        ? 'Mode Gestion : Tous les entrepôts disponibles'
+                        : 'Mode Vente : Seuls les entrepôts Boutique sont disponibles'}
                 </Text>
               </View>
               <TouchableOpacity
                 style={styles.modalCloseButton}
-                onPress={() => setShowWarehouseModal(false)}
+                onPress={() => {
+                  setShowWarehouseModal(false);
+                  setPendingModeSwitch(null);
+                }}
               >
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
             </View>
 
             <FlatList
-              data={availableWarehouses}
+              data={pendingModeSwitch === 'sell' || mode === 'sell'
+                ? allWarehouses.filter((w: Warehouse) => {
+                    if (!w.isActive) return false;
+                    // In sell mode, completely hide STOCKAGE warehouses
+                    if (w.type === 'STOCKAGE') return false;
+                    if (w.type !== 'BOUTIQUE' && w.type) return false;
+                    // Check employee access
+                    if (employee?.role?.name === 'admin') return true;
+                    return employee?.warehouses?.some((ew: Warehouse) => ew.id === w.id) ||
+                           employee?.warehouse?.id === w.id;
+                  })
+                : allWarehouses.filter((w: Warehouse) => {
+                    if (!w.isActive) return false;
+                    // In manage mode, show all assigned warehouses
+                    if (employee?.role?.name === 'admin') return true;
+                    return employee?.warehouses?.some((ew: Warehouse) => ew.id === w.id) ||
+                           employee?.warehouse?.id === w.id;
+                  })}
               keyExtractor={(item) => item.id}
               contentContainerStyle={styles.warehouseList}
               renderItem={({ item }) => {

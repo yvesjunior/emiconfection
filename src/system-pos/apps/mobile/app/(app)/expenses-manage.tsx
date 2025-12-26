@@ -135,7 +135,7 @@ export default function ExpensesManageScreen() {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       hapticNotification(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Succès', `Dépense ${isEditing ? 'modifiée' : 'créée'} avec succès`, [
-        { text: 'OK', onPress: () => router.back() },
+        { text: 'OK', onPress: () => router.replace('/(app)/expenses-list') },
       ]);
     },
     onError: (error: any) => {
@@ -192,7 +192,7 @@ export default function ExpensesManageScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => router.replace('/(app)/expenses-list')}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Modifier la dépense</Text>
@@ -213,7 +213,7 @@ export default function ExpensesManageScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => router.replace('/(app)/expenses-list')}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Nouvelle dépense</Text>
@@ -236,7 +236,7 @@ export default function ExpensesManageScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.replace('/(app)/expenses-list')}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>

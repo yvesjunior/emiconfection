@@ -8,10 +8,10 @@ const saleItemSchema = z.object({
 });
 
 const paymentSchema = z.object({
-  method: z.enum(['cash', 'card', 'mobile_money', 'credit']),
+  method: z.enum(['cash', 'mobile_money']),
   amount: z.number().positive('Amount must be positive'),
   amountReceived: z.number().min(0).optional(), // For cash payments
-  reference: z.string().optional(), // For card/mobile payments
+  reference: z.string().optional(), // For mobile payments
 });
 
 export const createSaleSchema = z.object({

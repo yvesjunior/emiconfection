@@ -156,7 +156,13 @@ export default function TransferRequestDetailScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace('/(app)/transfer-requests-list');
+            }
+          }}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Détails</Text>
@@ -187,7 +193,15 @@ export default function TransferRequestDetailScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => {
+          // Navigate back to transfer-requests-list - parent screen
+          if (router.canDismiss()) {
+            router.dismissAll();
+          }
+          setTimeout(() => {
+            router.push('/(app)/transfer-requests-list' as any);
+          }, 100);
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Détails du transfert</Text>

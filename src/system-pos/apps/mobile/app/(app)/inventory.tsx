@@ -31,10 +31,10 @@ interface InventoryItem {
     id: string;
     name: string;
     sku: string;
-    sellingPrice: string;
-    minStockLevel: number;
+    unit?: string;
   };
-  quantity: number;
+  quantity: number | string;
+  minStockLevel?: number | string;
   warehouse: {
     id: string;
     name: string;
@@ -51,16 +51,25 @@ export default function InventoryScreen() {
 
   const canAdjust = hasPermission('inventory:adjust');
 
-  // Fetch inventory
+  // Get current warehouse
+  const getEffectiveWarehouse = useAuthStore((state) => state.getEffectiveWarehouse);
+  const currentWarehouse = getEffectiveWarehouse();
+
+  // Fetch inventory - ALWAYS filter by current warehouse
   const { data, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['inventory', search, filterLowStock],
+    queryKey: ['inventory', search, filterLowStock, currentWarehouse?.id],
     queryFn: async () => {
       const params = new URLSearchParams({ limit: '100' });
       if (search) params.append('search', search);
       if (filterLowStock) params.append('lowStock', 'true');
+      // CRITICAL: Always include warehouseId to show correct inventory
+      if (currentWarehouse?.id) {
+        params.append('warehouseId', currentWarehouse.id);
+      }
       const res = await api.get(`/inventory?${params}`);
       return res.data;
     },
+    enabled: !!currentWarehouse?.id, // Don't fetch if no warehouse selected
   });
 
   // Fetch low stock count
@@ -76,15 +85,17 @@ export default function InventoryScreen() {
   const lowStockCount = lowStockData?.length || 0;
 
   const getStockStatus = (item: InventoryItem) => {
-    const minLevel = item.product.minStockLevel || 10;
-    if (item.quantity <= 0) return 'out';
-    if (item.quantity <= minLevel) return 'low';
+    const quantity = Number(item.quantity || 0);
+    const minLevel = Number(item.minStockLevel || 10);
+    if (quantity <= 0) return 'out';
+    if (quantity <= minLevel) return 'low';
     return 'ok';
   };
 
   const renderInventoryItem = ({ item }: { item: InventoryItem }) => {
+    const quantity = Number(item.quantity || 0);
+    const minLevel = Number(item.minStockLevel || 10);
     const status = getStockStatus(item);
-    const minLevel = item.product.minStockLevel || 10;
 
     return (
       <TouchableOpacity
@@ -108,9 +119,9 @@ export default function InventoryScreen() {
             {item.product.name}
           </Text>
           <Text style={styles.inventoryItemSku}>{item.product.sku}</Text>
-          <Text style={styles.inventoryItemPrice}>
-            {formatCurrency(Number(item.product.sellingPrice))}
-          </Text>
+          {item.product.unit && (
+            <Text style={styles.inventoryItemUnit}>{item.product.unit}</Text>
+          )}
         </View>
         <View style={styles.inventoryItemStock}>
           <Text style={[
@@ -118,7 +129,7 @@ export default function InventoryScreen() {
             status === 'out' && styles.stockQuantityOut,
             status === 'low' && styles.stockQuantityLow,
           ]}>
-            {item.quantity}
+            {quantity}
           </Text>
           <Text style={styles.stockLabel}>en stock</Text>
           {status === 'low' && (
@@ -139,7 +150,13 @@ export default function InventoryScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(app)/more');
+          }
+        }}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <View style={styles.headerTitleContainer}>
@@ -215,7 +232,7 @@ export default function InventoryScreen() {
         <View style={[styles.summaryCard, styles.summaryCardDanger]}>
           <Ionicons name="close-circle" size={24} color={colors.danger} />
           <Text style={styles.summaryValue}>
-            {inventoryItems.filter(i => i.quantity <= 0).length}
+            {inventoryItems.filter(i => Number(i.quantity || 0) <= 0).length}
           </Text>
           <Text style={styles.summaryLabel}>Rupture</Text>
         </View>
@@ -409,11 +426,11 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
   },
-  inventoryItemPrice: {
-    fontSize: fontSize.sm,
-    color: colors.primary,
-    fontWeight: '500',
+  inventoryItemUnit: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
     marginTop: 2,
+    fontStyle: 'italic',
   },
   inventoryItemStock: {
     alignItems: 'flex-end',
