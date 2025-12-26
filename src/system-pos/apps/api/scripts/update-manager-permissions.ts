@@ -17,7 +17,7 @@ async function updateManagerPermissions() {
     }
 
     // Get permissions to add
-    const permissionsToAdd = ['expenses:view', 'expenses:create'];
+    const permissionsToAdd = ['inventory:manage', 'expenses:view', 'expenses:create'];
     
     const permMap = new Map();
     for (const permName of permissionsToAdd) {

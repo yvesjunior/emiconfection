@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
   Image,
   Modal,
   ScrollView,
+  ActivityIndicator,
+  InteractionManager,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -149,6 +151,70 @@ export default function POSScreen() {
     return item?.quantity || 0;
   }, [cartItems]);
 
+  // Get stock available in the current connected warehouse
+  // CRITICAL: Always use the current warehouse to ensure correct quantities
+  const getStock = useCallback((product: Product) => {
+    if (!currentWarehouse) {
+      console.warn('[getStock] No warehouse selected - cannot determine stock');
+      return 0;
+    }
+    
+    // DEBUG: Log product and warehouse info
+    console.log(`[getStock] Checking stock for product ${product.name} (${product.sku}) in warehouse ${currentWarehouse.name} (${currentWarehouse.id})`);
+    console.log(`[getStock] Product inventory:`, {
+      hasInventory: !!product.inventory,
+      inventoryLength: product.inventory?.length || 0,
+      inventoryEntries: product.inventory?.map((inv: any) => ({
+        warehouseId: inv.warehouse?.id,
+        warehouseName: inv.warehouse?.name,
+        quantity: Number(inv.quantity || 0),
+      })),
+    });
+    
+    // When warehouseId is passed to API, inventory should always contain at least one entry
+    // (even if virtual with 0 stock) for the specified warehouse
+    if (product.inventory && product.inventory.length > 0) {
+      // Find inventory entry for the current warehouse
+      // Try multiple ways to match: by warehouse.id, by warehouseId field, or by warehouse name
+      const warehouseInventory = product.inventory.find(
+        (inv: any) => {
+          const matchesById = inv.warehouse?.id === currentWarehouse.id;
+          const matchesByWarehouseId = inv.warehouseId === currentWarehouse.id;
+          const matchesByName = inv.warehouse?.name === currentWarehouse.name;
+          return matchesById || matchesByWarehouseId || matchesByName;
+        }
+      );
+      
+      if (warehouseInventory) {
+        // Return the quantity (should always be a number, even if 0)
+        const qty = Number(warehouseInventory.quantity || 0);
+        console.log(`[getStock] Found inventory for ${product.name}: ${qty} units`);
+        return qty;
+      }
+      
+      // If no matching inventory found, log warning and return 0
+      // This should not happen if API is working correctly
+      console.warn(
+        `[getStock] Product ${product.name} (${product.sku}) has ${product.inventory.length} inventory entries but none match warehouse ${currentWarehouse.name} (${currentWarehouse.id})`
+      );
+      console.warn(`[getStock] Available inventory warehouses:`, product.inventory.map((inv: any) => ({
+        id: inv.warehouse?.id,
+        name: inv.warehouse?.name,
+      })));
+      return 0;
+    }
+    
+    // Fallback: if no inventory array at all, return 0
+    // This should not happen when warehouseId is passed to API
+    console.warn(
+      `[getStock] Product ${product.name} (${product.sku}) has no inventory data for warehouse ${currentWarehouse.name}`
+    );
+    return 0;
+  }, [currentWarehouse]);
+
+  // Check if current connected warehouse is a Boutique
+  const isBoutiqueWarehouse = currentWarehouse?.type === 'BOUTIQUE' || (!currentWarehouse?.type && currentWarehouse);
+
   const handleAddToCart = useCallback((product: Product) => {
     if (appMode === 'manage') {
       // In manage mode, open product for editing
@@ -265,69 +331,94 @@ export default function POSScreen() {
     }
   }, [handleAddToCart, router, currentWarehouse]);
 
-  // Get stock available in the current connected warehouse
-  // CRITICAL: Always use the current warehouse to ensure correct quantities
-  const getStock = useCallback((product: Product) => {
-    if (!currentWarehouse) {
-      console.warn('[getStock] No warehouse selected - cannot determine stock');
-      return 0;
+  // Helper function to create transfer request
+  // IMPORTANT: The requester CANNOT specify quantity - they can only ask for help
+  // The quantity will be determined by the approver (manager/admin) based on what they can afford to give
+  const createTransferRequest = async (
+    productId: string | undefined,
+    fromWarehouseId: string,
+    toWarehouseId: string
+  ): Promise<void> => {
+    if (!productId) {
+      throw new Error('ID du produit manquant');
     }
+
+    // Ensure all IDs are strings
+    const productIdStr = String(productId).trim();
+    const fromWarehouseIdStr = String(fromWarehouseId).trim();
+    const toWarehouseIdStr = String(toWarehouseId).trim();
     
-    // DEBUG: Log product and warehouse info
-    console.log(`[getStock] Checking stock for product ${product.name} (${product.sku}) in warehouse ${currentWarehouse.name} (${currentWarehouse.id})`);
-    console.log(`[getStock] Product inventory:`, {
-      hasInventory: !!product.inventory,
-      inventoryLength: product.inventory?.length || 0,
-      inventoryEntries: product.inventory?.map((inv: any) => ({
-        warehouseId: inv.warehouse?.id,
-        warehouseName: inv.warehouse?.name,
-        quantity: Number(inv.quantity || 0),
-      })),
+    // Validate UUIDs format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(productIdStr)) {
+      throw new Error(`ID du produit invalide: ${productIdStr}`);
+    }
+    if (!uuidRegex.test(fromWarehouseIdStr)) {
+      throw new Error(`ID de l'entrepôt source invalide: ${fromWarehouseIdStr}`);
+    }
+    if (!uuidRegex.test(toWarehouseIdStr)) {
+      throw new Error(`ID de l'entrepôt de destination invalide: ${toWarehouseIdStr}`);
+    }
+
+    const requestData = {
+      productId: productIdStr,
+      fromWarehouseId: fromWarehouseIdStr,
+      toWarehouseId: toWarehouseIdStr,
+      notes: 'Transfert demandé depuis le POS (mode vente)',
+    };
+    
+    console.log('[Transfer Request] Creating with data:', {
+      ...requestData,
+      originalProductId: productId,
+      originalFromWarehouseId: fromWarehouseId,
+      originalToWarehouseId: toWarehouseId,
     });
     
-    // When warehouseId is passed to API, inventory should always contain at least one entry
-    // (even if virtual with 0 stock) for the specified warehouse
-    if (product.inventory && product.inventory.length > 0) {
-      // Find inventory entry for the current warehouse
-      // Try multiple ways to match: by warehouse.id, by warehouseId field, or by warehouse name
-      const warehouseInventory = product.inventory.find(
-        (inv: any) => {
-          const matchesById = inv.warehouse?.id === currentWarehouse.id;
-          const matchesByWarehouseId = inv.warehouseId === currentWarehouse.id;
-          const matchesByName = inv.warehouse?.name === currentWarehouse.name;
-          return matchesById || matchesByWarehouseId || matchesByName;
-        }
-      );
+    try {
+      const response = await api.post('/inventory/transfer', requestData);
       
-      if (warehouseInventory) {
-        // Return the quantity (should always be a number, even if 0)
-        const qty = Number(warehouseInventory.quantity || 0);
-        console.log(`[getStock] Found inventory for ${product.name}: ${qty} units`);
-        return qty;
+      console.log('[Transfer Request] Response:', response.data);
+      
+      // Validate response
+      if (!response.data?.success) {
+        throw new Error(response.data?.message || 'Erreur lors de la création de la demande');
       }
       
-      // If no matching inventory found, log warning and return 0
-      // This should not happen if API is working correctly
-      console.warn(
-        `[getStock] Product ${product.name} (${product.sku}) has ${product.inventory.length} inventory entries but none match warehouse ${currentWarehouse.name} (${currentWarehouse.id})`
-      );
-      console.warn(`[getStock] Available inventory warehouses:`, product.inventory.map((inv: any) => ({
-        id: inv.warehouse?.id,
-        name: inv.warehouse?.name,
-      })));
-      return 0;
+      hapticNotification(Haptics.NotificationFeedbackType.Success);
+      
+      // Invalidate queries to refresh product list
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['product', 'stock-modal', productId] });
+    } catch (error: any) {
+      console.error('[Transfer Request] Full error:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      
+      // Handle Zod validation errors (backend returns details array)
+      if (error.response?.data?.details && Array.isArray(error.response.data.details)) {
+        const zodErrors = error.response.data.details;
+        const errorMessages = zodErrors
+          .map((e: any) => `${e.field || 'champ'}: ${e.message}`)
+          .join('\n');
+        throw new Error(`Erreur de validation:\n${errorMessages}`);
+      }
+      
+      // Handle other API errors
+      if (error.response?.data?.message) {
+        throw new Error(error.response.data.message);
+      }
+      
+      // Re-throw original error if it's already an Error
+      if (error instanceof Error) {
+        throw error;
+      }
+      
+      throw new Error(error.message || 'Une erreur est survenue lors de la création de la demande');
     }
-    
-    // Fallback: if no inventory array at all, return 0
-    // This should not happen when warehouseId is passed to API
-    console.warn(
-      `[getStock] Product ${product.name} (${product.sku}) has no inventory data for warehouse ${currentWarehouse.name}`
-    );
-    return 0;
-  }, [currentWarehouse]);
-
-  // Check if current connected warehouse is a Boutique
-  const isBoutiqueWarehouse = currentWarehouse?.type === 'BOUTIQUE' || (!currentWarehouse?.type && currentWarehouse);
+  };
 
   // Handle barcode input submission
   const handleBarcodeSubmit = useCallback(async () => {
@@ -772,32 +863,258 @@ export default function POSScreen() {
           setSelectedProductForStock(null);
         }}
       >
-        <SafeAreaView style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <View>
-              <Text style={styles.modalTitle}>Stocks par entrepôt</Text>
-              {selectedProductForStock && (
-                <Text style={styles.modalSubtitle} numberOfLines={1}>
-                  {selectedProductForStock.name}
-                </Text>
-              )}
-            </View>
-            <TouchableOpacity
-              style={styles.modalCloseButton}
-              onPress={() => {
-                setShowStockModal(false);
-                setSelectedProductForStock(null);
-              }}
-            >
-              <Ionicons name="close" size={24} color={colors.text} />
-            </TouchableOpacity>
-          </View>
+        <StockModalContent
+          product={selectedProductForStock}
+          currentWarehouse={currentWarehouse}
+          onClose={() => {
+            setShowStockModal(false);
+            setSelectedProductForStock(null);
+          }}
+          queryClient={queryClient}
+          appMode={appMode}
+          createTransferRequest={createTransferRequest}
+        />
+      </Modal>
 
-          <FlatList
-            data={selectedProductForStock?.inventory || []}
+    </SafeAreaView>
+  );
+}
+
+// Separate component for stock modal to handle product refetch
+function StockModalContent({ 
+  product, 
+  currentWarehouse, 
+  onClose,
+  queryClient,
+  appMode,
+  createTransferRequest,
+}: { 
+  product: Product | null; 
+  currentWarehouse: { id: string; name: string; type?: 'BOUTIQUE' | 'STOCKAGE' } | null;
+  onClose: () => void;
+  queryClient: any;
+  appMode: 'sell' | 'manage';
+  createTransferRequest?: (productId: string | undefined, fromWarehouseId: string, toWarehouseId: string) => Promise<void>;
+}) {
+  // Fetch complete product data (ALL warehouses) when modal opens
+  const { data: completeProductData, isLoading: isLoadingProduct } = useQuery({
+    queryKey: ['product', 'stock-modal', product?.id],
+    queryFn: async () => {
+      if (!product?.id) return null;
+      console.log('[Stock Modal] Fetching complete product data for:', product.id);
+      // CRITICAL: Fetch WITHOUT warehouseId to get ALL warehouses
+      const res = await api.get(`/products/${product.id}`);
+      const data = res.data.data;
+      console.log('[Stock Modal] Received inventory count:', data?.inventory?.length || 0);
+      if (data?.inventory) {
+        data.inventory.forEach((inv: any, index: number) => {
+          const qty = typeof inv.quantity === 'number' ? inv.quantity : Number(inv.quantity) || 0;
+          console.log(`[Stock Modal] Inventory[${index}]: ${inv.warehouse?.name} (${inv.warehouse?.type}): ${qty} units`);
+        });
+      }
+      return data;
+    },
+    enabled: !!product?.id,
+    staleTime: 0, // Always fetch fresh data
+  });
+
+  // Use complete product data if available, otherwise fallback to product from list
+  const productData = completeProductData || product;
+  const inventory = productData?.inventory || [];
+
+  // Helper function to safely convert quantity
+  const getQuantity = (inv: InventoryItem): number => {
+    if (typeof inv.quantity === 'number') return inv.quantity;
+    if (typeof inv.quantity === 'string') return Number(inv.quantity) || 0;
+    if (inv.quantity && typeof inv.quantity === 'object' && 'toNumber' in inv.quantity) {
+      return (inv.quantity as any).toNumber();
+    }
+    return Number(inv.quantity) || 0;
+  };
+
+  // Check if transfer section will be shown (to filter duplicates)
+  const currentWarehouseInv = inventory.find((inv: InventoryItem) => 
+    inv.warehouse.id === currentWarehouse?.id
+  );
+  const employee = useAuthStore.getState().employee;
+  const isManager = employee?.role?.name === 'manager';
+  const isAdmin = employee?.role?.name === 'admin';
+  const isSellMode = appMode === 'sell';
+  const canRequestTransfer = (isManager || isAdmin) && isSellMode;
+  const showTransferSection = currentWarehouseInv && 
+    currentWarehouseInv.warehouse.type === 'BOUTIQUE' &&
+    getQuantity(currentWarehouseInv) === 0 &&
+    canRequestTransfer;
+
+  // Find warehouses with stock for transfer section
+  const warehousesWithStock = showTransferSection
+    ? inventory.filter((inv: InventoryItem) => {
+        const invQty = getQuantity(inv);
+        const hasStock = invQty > 0;
+        const isNotCurrent = inv.warehouse.id !== currentWarehouse?.id;
+        return hasStock && isNotCurrent;
+      })
+    : [];
+
+  return (
+    <SafeAreaView style={styles.modalContainer}>
+      <View style={styles.modalHeader}>
+        <View>
+          <Text style={styles.modalTitle}>Stocks par entrepôt</Text>
+          {productData && (
+            <Text style={styles.modalSubtitle} numberOfLines={1}>
+              {productData.name}
+            </Text>
+          )}
+        </View>
+        <TouchableOpacity
+          style={styles.modalCloseButton}
+          onPress={onClose}
+        >
+          <Ionicons name="close" size={24} color={colors.text} />
+        </TouchableOpacity>
+      </View>
+
+      {isLoadingProduct ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Chargement des stocks...</Text>
+        </View>
+      ) : showTransferSection && warehousesWithStock.length > 0 ? (
+        // Show only transfer section when applicable
+        <ScrollView style={styles.stockListContent}>
+          <View style={[styles.stockItem, styles.stockItemCurrent]}>
+            <View style={styles.stockItemHeader}>
+              <View style={styles.stockItemInfo}>
+                <View style={styles.stockItemTitleRow}>
+                  <Text style={styles.stockWarehouseName}>{currentWarehouseInv.warehouse.name}</Text>
+                  <View style={styles.currentBadge}>
+                    <Text style={styles.currentBadgeText}>Actuel</Text>
+                  </View>
+                </View>
+                <Text style={styles.stockWarehouseCode}>{currentWarehouseInv.warehouse.code}</Text>
+              </View>
+            </View>
+            <View style={styles.stockQuantityRow}>
+              <Text style={styles.stockQuantityLabel}>Quantité disponible:</Text>
+              <Text style={[styles.stockQuantity, styles.stockQuantityZero]}>
+                0
+              </Text>
+            </View>
+            <View style={styles.transferSection}>
+              <View style={styles.transferSectionHeader}>
+                <Ionicons name="swap-horizontal" size={20} color={colors.primary} />
+                <Text style={styles.transferSectionTitle}>
+                  Entrepôts disponibles pour transfert
+                </Text>
+              </View>
+              <View style={styles.transferListContainer}>
+                {warehousesWithStock.map((sourceInv: InventoryItem, index: number) => {
+                  const sourceQty = getQuantity(sourceInv);
+                  const isBoutique = sourceInv.warehouse.type === 'BOUTIQUE';
+                  const isStockage = sourceInv.warehouse.type === 'STOCKAGE';
+                  return (
+                    <TouchableOpacity
+                      key={sourceInv.id}
+                      style={[
+                        styles.transferOptionItem,
+                        index === warehousesWithStock.length - 1 && styles.transferOptionItemLast
+                      ]}
+                      onPress={async () => {
+                        if (!createTransferRequest || !productData?.id) {
+                          Alert.alert('Erreur', 'Données manquantes pour créer la demande');
+                          return;
+                        }
+                        
+                        if (!sourceInv?.warehouse?.id || !currentWarehouseInv?.warehouse?.id) {
+                          Alert.alert('Erreur', 'Informations d\'entrepôt manquantes');
+                          return;
+                        }
+                        
+                        try {
+                          await createTransferRequest(
+                            productData.id,
+                            sourceInv.warehouse.id,
+                            currentWarehouseInv.warehouse.id
+                          );
+                          Alert.alert(
+                            'Succès', 
+                            'Votre demande de transfert a été créée. Elle sera examinée par un Manager.',
+                            [{ text: 'OK', onPress: onClose }]
+                          );
+                        } catch (error: any) {
+                          hapticNotification(Haptics.NotificationFeedbackType.Error);
+                          console.error('[Transfer Request] Handler Error:', {
+                            error,
+                            message: error.message,
+                            response: error.response?.data,
+                          });
+                          
+                          // Extract error message
+                          let message = 'Impossible de créer la demande de transfert';
+                          if (error.message) {
+                            message = error.message;
+                          } else if (error.response?.data?.message) {
+                            message = error.response.data.message;
+                          } else if (error.response?.data?.error) {
+                            message = error.response.data.error;
+                          }
+                          
+                          Alert.alert('Erreur', message);
+                        }
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.transferOptionIconContainer}>
+                        <Ionicons 
+                          name={isBoutique ? 'storefront' : 'archive'} 
+                          size={24} 
+                          color={isBoutique ? colors.primary : colors.success} 
+                        />
+                      </View>
+                      <View style={styles.transferOptionContent}>
+                        <View style={styles.transferOptionHeader}>
+                          <Text style={styles.transferOptionName}>
+                            {sourceInv.warehouse.name}
+                          </Text>
+                          <View style={[
+                            styles.transferTypeBadge,
+                            isBoutique ? styles.transferTypeBadgeBoutique : styles.transferTypeBadgeStockage
+                          ]}>
+                            <Text style={[
+                              styles.transferTypeBadgeText,
+                              isBoutique ? styles.transferTypeBadgeTextBoutique : styles.transferTypeBadgeTextStockage
+                            ]}>
+                              {isBoutique ? 'Boutique' : 'Stockage'}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.transferOptionCode}>
+                          {sourceInv.warehouse.code}
+                        </Text>
+                        <View style={styles.transferStockInfo}>
+                          <Ionicons name="cube" size={14} color={colors.success} />
+                          <Text style={styles.transferStockQuantity}>
+                            {sourceQty} unité{sourceQty > 1 ? 's' : ''} disponible{sourceQty > 1 ? 's' : ''}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.transferArrowContainer}>
+                        <Ionicons name="arrow-forward-circle" size={28} color={colors.primary} />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={inventory}
             keyExtractor={(item) => item.id}
             renderItem={({ item }: { item: InventoryItem }) => {
-              const qty = Number(item.quantity || 0);
+              const qty = getQuantity(item);
               const isBoutique = item.warehouse.type === 'BOUTIQUE';
               const isStockage = item.warehouse.type === 'STOCKAGE';
               const isCurrentWarehouse = item.warehouse.id === currentWarehouse?.id;
@@ -846,58 +1163,69 @@ export default function POSScreen() {
                       {qty}
                     </Text>
                   </View>
-                  {isBoutique && qty === 0 && isCurrentWarehouse && (
-                    <TouchableOpacity
-                      style={styles.transferButton}
-                      onPress={async () => {
-                        // Find a stockage warehouse with stock
-                        const stockageInv = selectedProductForStock?.inventory?.find((inv: InventoryItem) => 
-                          inv.warehouse.type === 'STOCKAGE' && Number(inv.quantity) > 0
-                        );
-                        if (stockageInv) {
-                          setShowStockModal(false);
-                          Alert.alert(
-                            'Demander un transfert',
-                            `Transférer depuis ${stockageInv.warehouse.name} vers ${item.warehouse.name} ?`,
-                            [
-                              { text: 'Annuler', style: 'cancel' },
-                              {
-                                text: 'Demander',
-                                onPress: async () => {
+                  {(() => {
+                    // Show transfer option for boutique warehouses with 0 stock in current warehouse
+                    if (!isBoutique || qty !== 0 || !isCurrentWarehouse || !canRequestTransfer) {
+                      return null;
+                    }
+                    
+                    // Find warehouses with stock (quantity > 0) that are NOT the current warehouse
+                    // Use full inventory list to show all available options
+                    const warehousesWithStock = inventory.filter((inv: InventoryItem) => {
+                      const invQty = getQuantity(inv);
+                      const hasStock = invQty > 0;
+                      const isNotCurrent = inv.warehouse.id !== item.warehouse.id;
+                      return hasStock && isNotCurrent;
+                    });
+                    
+                    if (warehousesWithStock.length === 0) {
+                      return null; // No warehouses with stock available
+                    }
+                    
+                    // Show available warehouses directly in the main list
+                    return (
+                      <View style={styles.transferSection}>
+                        <Text style={styles.transferSectionTitle}>
+                          Entrepôts disponibles pour transfert:
+                        </Text>
+                        {warehousesWithStock.map((sourceInv: InventoryItem) => {
+                          const sourceQty = getQuantity(sourceInv);
+                          return (
+                            <TouchableOpacity
+                              key={sourceInv.id}
+                              style={styles.transferOptionItem}
+                              onPress={async () => {
+                                if (createTransferRequest && productData?.id) {
                                   try {
-                                    await api.post('/inventory/transfer', {
-                                      productId: selectedProductForStock?.id,
-                                      fromWarehouseId: stockageInv.warehouse.id,
-                                      toWarehouseId: item.warehouse.id,
-                                      quantity: Number(stockageInv.quantity),
-                                      notes: 'Transfert demandé depuis le POS',
-                                    });
-                                    hapticNotification(Haptics.NotificationFeedbackType.Success);
-                                    queryClient.invalidateQueries({ queryKey: ['products'] });
-                                    Alert.alert('Succès', 'Transfert demandé avec succès', [
-                                      { text: 'OK', onPress: () => {
-                                        setShowStockModal(false);
-                                        setSelectedProductForStock(null);
-                                      }}
-                                    ]);
+                                    await createTransferRequest(
+                                      productData.id,
+                                      sourceInv.warehouse.id,
+                                      item.warehouse.id
+                                    );
+                                    Alert.alert('Succès', 'Demande de transfert créée avec succès');
+                                    onClose();
                                   } catch (error: any) {
-                                    hapticNotification(Haptics.NotificationFeedbackType.Error);
-                                    const message = error.response?.data?.message || 'Une erreur est survenue';
-                                    Alert.alert('Erreur', message);
+                                    Alert.alert('Erreur', error.response?.data?.message || 'Impossible de créer la demande de transfert');
                                   }
                                 }
-                              }
-                            ]
+                              }}
+                            >
+                              <Ionicons name="checkbox-outline" size={20} color={colors.primary} />
+                              <View style={styles.transferOptionContent}>
+                                <Text style={styles.transferOptionName}>
+                                  {sourceInv.warehouse.name}
+                                </Text>
+                                <Text style={styles.transferOptionCode}>
+                                  {sourceInv.warehouse.code} • {sourceQty} unité{sourceQty > 1 ? 's' : ''} disponible{sourceQty > 1 ? 's' : ''}
+                                </Text>
+                              </View>
+                              <Ionicons name="arrow-forward" size={16} color={colors.textMuted} />
+                            </TouchableOpacity>
                           );
-                        } else {
-                          Alert.alert('Aucun stock disponible', 'Aucun entrepôt Stockage n\'a de stock disponible pour ce produit');
-                        }
-                      }}
-                    >
-                      <Ionicons name="swap-horizontal" size={16} color={colors.primary} />
-                      <Text style={styles.transferButtonText}>Demander un transfert</Text>
-                    </TouchableOpacity>
-                  )}
+                        })}
+                      </View>
+                    );
+                  })()}
                 </View>
               );
             }}
@@ -909,11 +1237,10 @@ export default function POSScreen() {
               </View>
             }
           />
-        </SafeAreaView>
-      </Modal>
-    </SafeAreaView>
-  );
-}
+        )}
+      </SafeAreaView>
+    );
+  }
 
 const styles = StyleSheet.create({
   container: {
@@ -1420,6 +1747,117 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.primary,
   },
+  warehouseSelectionContainer: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.background + '80',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  transferSection: {
+    marginTop: spacing.lg,
+    paddingTop: spacing.lg,
+    borderTopWidth: 2,
+    borderTopColor: colors.primaryLight + '40',
+  },
+  transferSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.xs,
+  },
+  transferSectionTitle: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.text,
+    letterSpacing: 0.3,
+  },
+  transferListContainer: {
+    gap: spacing.sm,
+  },
+  transferOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1.5,
+    borderColor: colors.primaryLight + '30',
+    gap: spacing.md,
+    ...shadows.sm,
+  },
+  transferOptionItemLast: {
+    marginBottom: 0,
+  },
+  transferOptionIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.primaryLight + '15',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  transferOptionContent: {
+    flex: 1,
+    gap: spacing.xs / 2,
+  },
+  transferOptionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  transferOptionName: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.text,
+    flex: 1,
+  },
+  transferTypeBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: borderRadius.sm,
+  },
+  transferTypeBadgeBoutique: {
+    backgroundColor: colors.primaryLight + '25',
+  },
+  transferTypeBadgeStockage: {
+    backgroundColor: colors.successLight + '25',
+  },
+  transferTypeBadgeText: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
+  transferTypeBadgeTextBoutique: {
+    color: colors.primary,
+  },
+  transferTypeBadgeTextStockage: {
+    color: colors.success,
+  },
+  transferOptionCode: {
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+    fontWeight: '500',
+    letterSpacing: 0.5,
+  },
+  transferStockInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs / 2,
+    marginTop: spacing.xs / 2,
+  },
+  transferStockQuantity: {
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+    color: colors.success,
+  },
+  transferArrowContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   emptyStockState: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1429,6 +1867,17 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     color: colors.textMuted,
     marginTop: spacing.md,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  loadingText: {
+    marginTop: spacing.md,
+    fontSize: fontSize.md,
+    color: colors.textSecondary,
   },
 });
 

@@ -1,5 +1,5 @@
 import { Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import * as jwt from 'jsonwebtoken';
 import { AuthenticatedRequest, JwtPayload, ApiError } from '../types/index.js';
 import prisma from '../../config/database.js';
 
@@ -90,6 +90,58 @@ export function requirePermission(...requiredPermissions: string[]) {
 
     if (!hasPermission) {
       throw ApiError.forbidden('Insufficient permissions');
+    }
+
+    next();
+  };
+}
+
+/**
+ * Middleware that requires permission AND warehouse access for managers.
+ * For managers, checks if they have access to the warehouse specified in the request.
+ * For admins, only checks permission (they have access to all warehouses).
+ * 
+ * @param requiredPermissions - The permissions required
+ * @param getWarehouseId - Function to extract warehouse ID from request (body, params, or query)
+ */
+export function requirePermissionAndWarehouseAccess(
+  ...requiredPermissions: string[]
+) {
+  return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
+    if (!req.employee) {
+      throw ApiError.unauthorized();
+    }
+
+    // Admin has all permissions and access to all warehouses
+    if (req.employee.roleName === 'admin') {
+      const hasPermission = requiredPermissions.some((permission) =>
+        req.employee!.permissions.includes(permission)
+      );
+      if (!hasPermission) {
+        throw ApiError.forbidden('Insufficient permissions');
+      }
+      next();
+      return;
+    }
+
+    // Check permission first
+    const hasPermission = requiredPermissions.some((permission) =>
+      req.employee!.permissions.includes(permission)
+    );
+
+    if (!hasPermission) {
+      throw ApiError.forbidden('Insufficient permissions');
+    }
+
+    // For managers, check warehouse access if warehouseId is provided
+    // Extract warehouseId from body, params, or query
+    const warehouseId = req.body?.warehouseId || req.params?.warehouseId || req.query?.warehouseId;
+    
+    if (warehouseId && req.employee.roleName === 'manager') {
+      const hasAccess = await validateWarehouseAccess(req.employee.id, warehouseId as string);
+      if (!hasAccess) {
+        throw ApiError.forbidden('You do not have access to this warehouse');
+      }
     }
 
     next();

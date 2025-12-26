@@ -117,6 +117,7 @@ async function main() {
     'products:create',
     'products:read',
     'products:update',
+    'inventory:manage', // Allow managers to manage transfers (approve and receive)
     'inventory:adjust',
     'inventory:view',
     'sales:create',

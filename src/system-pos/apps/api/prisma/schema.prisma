@@ -73,6 +73,7 @@ model Employee {
   auditLogs             AuditLog[]
   transferRequests      StockTransferRequest[] @relation("TransferRequester")
   transferApprovals     StockTransferRequest[] @relation("TransferApprover")
+  systemSettingsUpdates SystemSettings[] @relation("SystemSettingsUpdater")
 
   @@map("employees")
 }
@@ -181,6 +182,7 @@ model Warehouse {
   expenses             Expense[]
   transferRequestsFrom StockTransferRequest[] @relation("TransferFrom")
   transferRequestsTo   StockTransferRequest[] @relation("TransferTo")
+  managerAlerts        ManagerAlert[]
 
   @@map("warehouses")
 }
@@ -227,7 +229,7 @@ model StockTransferRequest {
   productId       String   @map("product_id")
   fromWarehouseId String   @map("from_warehouse_id")
   toWarehouseId   String   @map("to_warehouse_id")
-  quantity        Decimal  @db.Decimal(10, 3)
+  quantity        Decimal? @db.Decimal(10, 3) // Optional - set during approval
   status          String   @default("pending") // pending, approved, rejected
   requestedBy     String   @map("requested_by")
   approvedBy      String?  @map("approved_by")
@@ -464,6 +466,21 @@ model Setting {
   @@map("settings")
 }
 
+// System Settings for loyalty points and other system-wide configurations
+model SystemSettings {
+  id                        String    @id @default(uuid())
+  loyaltyPointsAttributionRate Decimal? @db.Decimal(5, 4) @map("loyalty_points_attribution_rate") // e.g., 0.01 = 1%
+  loyaltyPointsConversionRate Decimal? @db.Decimal(10, 2) @map("loyalty_points_conversion_rate") // e.g., 1.0 = 1 point = 1 FCFA
+  updatedBy                 String?   @map("updated_by")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+
+  updater                   Employee? @relation("SystemSettingsUpdater", fields: [updatedBy], references: [id])
+
+  @@unique([id])
+  @@map("system_settings")
+}
+
 model AuditLog {
   id         String   @id @default(uuid())
   employeeId String?  @map("employee_id")
@@ -479,5 +496,26 @@ model AuditLog {
   employee Employee? @relation(fields: [employeeId], references: [id])
 
   @@map("audit_logs")
+}
+
+// Manager Alerts for important activities
+model ManagerAlert {
+  id          String   @id @default(uuid())
+  type        String   // stock_reduction, transfer_request, transfer_approval, transfer_rejection, transfer_reception, user_creation, product_deletion
+  severity    String   @default("warning") // info, warning, critical
+  title       String
+  message     String
+  warehouseId String?  @map("warehouse_id")
+  resourceId  String?  @map("resource_id") // ID of related resource (product, transfer request, employee, etc.)
+  metadata    Json?    // Additional context data
+  isRead      Boolean  @default(false) @map("is_read")
+  createdAt   DateTime @default(now()) @map("created_at")
+  readAt      DateTime? @map("read_at")
+
+  warehouse Warehouse? @relation(fields: [warehouseId], references: [id])
+
+  @@index([warehouseId, createdAt])
+  @@index([isRead, createdAt])
+  @@map("manager_alerts")
 }
 

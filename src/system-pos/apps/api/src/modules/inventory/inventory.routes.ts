@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../../common/types/index.js';
-import { authenticate, requirePermission, getWarehouseScope, getWarehouseForCreate } from '../../common/middleware/auth.js';
+import { authenticate, requirePermission, getWarehouseScope, getWarehouseForCreate, requireWarehouseAccess } from '../../common/middleware/auth.js';
 import { PERMISSIONS } from '../../config/constants.js';
 import * as inventoryService from './inventory.service.js';
 import * as transferRequestsService from './transfer-requests.service.js';
@@ -51,11 +51,51 @@ router.post('/adjust', requirePermission(PERMISSIONS.INVENTORY_ADJUST), async (r
   res.json({ success: true, data: result });
 });
 
-// POST /api/inventory/transfer - Transfer stock between warehouses
+// POST /api/inventory/transfer - Create a transfer request (all transfers require approval)
+// This endpoint now always creates a transfer request - no automatic transfers
+// Quantity is NOT specified during creation - it will be set during approval
 router.post('/transfer', requirePermission(PERMISSIONS.INVENTORY_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
-  const input = transferStockSchema.parse(req.body);
-  const result = await inventoryService.transferStock(input, req.employee!.id);
-  res.json({ success: true, data: result });
+  const input = createTransferRequestSchema.parse(req.body);
+  
+  // Validate warehouse access - employee must have access to source warehouse
+  // Check if employee has access to the source warehouse
+  const employee = await prisma.employee.findUnique({
+    where: { id: req.employee!.id },
+    include: {
+      warehouses: {
+        select: { warehouseId: true },
+      },
+    },
+  });
+
+  if (!employee) {
+    return res.status(403).json({ success: false, message: 'Employee not found' });
+  }
+
+  const assignedWarehouseIds = employee.warehouses.map((ew) => ew.warehouseId);
+  if (employee.warehouseId) {
+    assignedWarehouseIds.push(employee.warehouseId);
+  }
+  const hasAccess = assignedWarehouseIds.includes(input.fromWarehouseId);
+  const isAdmin = req.employee!.roleName === 'admin';
+
+  // Admins have access to all warehouses, others need explicit access
+  if (!hasAccess && !isAdmin) {
+    return res.status(403).json({ 
+      success: false, 
+      message: 'You do not have access to the source warehouse' 
+    });
+  }
+  
+  // Create transfer request without quantity (quantity will be set during approval)
+  const transferRequest = await transferRequestsService.createTransferRequest(input, req.employee!.id);
+  
+  res.status(201).json({ 
+    success: true, 
+    data: transferRequest,
+    message: 'Transfer request created - awaiting approval',
+    isTransferRequest: true
+  });
 });
 
 // PUT /api/inventory/levels - Set min/max stock levels
@@ -94,6 +134,16 @@ router.put('/transfer-requests/:id/approve', requirePermission(PERMISSIONS.INVEN
   const result = await transferRequestsService.approveTransferRequest(
     req.params.id,
     input,
+    req.employee!.id,
+    req.employee!.roleName
+  );
+  res.json({ success: true, data: result });
+});
+
+// PUT /api/inventory/transfer-requests/:id/receive - Mark transfer request as received and transfer stock
+router.put('/transfer-requests/:id/receive', requirePermission(PERMISSIONS.INVENTORY_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
+  const result = await transferRequestsService.markTransferRequestAsReceived(
+    req.params.id,
     req.employee!.id,
     req.employee!.roleName
   );

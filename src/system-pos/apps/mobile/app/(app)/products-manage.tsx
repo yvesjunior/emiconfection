@@ -63,7 +63,7 @@ interface Warehouse {
 
 interface InventoryItem {
   id: string;
-  quantity: string;
+  quantity: number | string; // Can be number (from API) or string (from Prisma Decimal)
   warehouseId?: string;
   warehouse: {
     id: string;
@@ -105,6 +105,17 @@ export default function ProductsManageScreen() {
   }>();
   const hasPermission = useAuthStore((state) => state.hasPermission);
   const employee = useAuthStore((state) => state.employee);
+  const getEffectiveWarehouse = useAuthStore((state) => state.getEffectiveWarehouse);
+
+  // Helper function to safely convert quantity (MUST be defined before useQuery)
+  const getQuantity = (inv: InventoryItem): number => {
+    if (typeof inv.quantity === 'number') return inv.quantity;
+    if (typeof inv.quantity === 'string') return Number(inv.quantity) || 0;
+    if (inv.quantity && typeof inv.quantity === 'object' && 'toNumber' in inv.quantity) {
+      return (inv.quantity as any).toNumber();
+    }
+    return Number(inv.quantity) || 0;
+  };
 
   const isEditing = !!productId;
 
@@ -129,6 +140,7 @@ export default function ProductsManageScreen() {
   const [showStockModal, setShowStockModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferFromWarehouse, setTransferFromWarehouse] = useState<string | null>(null);
+  const [transferToWarehouse, setTransferToWarehouse] = useState<string | null>(null);
   const [transferQuantity, setTransferQuantity] = useState('');
   const [editingWarehouseStock, setEditingWarehouseStock] = useState<{ warehouseId: string; quantity: string } | null>(null);
 
@@ -182,6 +194,24 @@ export default function ProductsManageScreen() {
   });
 
   const allWarehouses = warehousesData || [];
+  const warehouses = allWarehouses; // Alias for clarity
+  
+  // Filter warehouses based on employee access for transfer destination selection
+  // Admin can access all warehouses, others only their assigned warehouses
+  const availableWarehousesForTransfer = allWarehouses.filter((w: any) => {
+    if (employee?.role?.name === 'admin') return true;
+    
+    // Check assigned warehouses from EmployeeWarehouse table
+    const employeeWarehouses = employee?.warehouses || [];
+    const assignedWarehouseIds = employeeWarehouses.map((ew: any) => ew.warehouse?.id || ew.warehouseId).filter(Boolean);
+    
+    // Also check primary warehouse
+    if (employee?.warehouse?.id) {
+      assignedWarehouseIds.push(employee.warehouse.id);
+    }
+    
+    return assignedWarehouseIds.includes(w.id);
+  });
   
   // Filter warehouses based on employee access
   // Admin can access all warehouses, others only their assigned warehouses
@@ -205,18 +235,69 @@ export default function ProductsManageScreen() {
   );
 
   // Fetch product if editing
-  const { data: productData, isLoading: isLoadingProduct } = useQuery({
+  const { data: productData, isLoading: isLoadingProduct, refetch: refetchProduct } = useQuery({
     queryKey: ['product', productId],
     queryFn: async () => {
+      console.log('[products-manage] Fetching product:', productId);
       const res = await api.get(`/products/${productId}`);
-      return res.data.data;
+      const data = res.data.data;
+      
+      // CRITICAL DEBUG: Log raw API response
+      console.log('[products-manage] ===== RAW API RESPONSE =====');
+      console.log('[products-manage] Product name:', data?.name);
+      console.log('[products-manage] Inventory count:', data?.inventory?.length || 0);
+      if (data?.inventory && Array.isArray(data.inventory)) {
+        data.inventory.forEach((inv: any, index: number) => {
+          // Helper function inline for logging
+          const getQty = (inv: any): number => {
+            if (typeof inv.quantity === 'number') return inv.quantity;
+            if (typeof inv.quantity === 'string') return Number(inv.quantity) || 0;
+            if (inv.quantity && typeof inv.quantity === 'object' && 'toNumber' in inv.quantity) {
+              return (inv.quantity as any).toNumber();
+            }
+            return Number(inv.quantity) || 0;
+          };
+          const qty = getQty(inv);
+          console.log(`[products-manage] Inventory[${index}]:`, {
+            warehouse: inv.warehouse?.name,
+            warehouseId: inv.warehouse?.id,
+            warehouseType: inv.warehouse?.type,
+            quantity: inv.quantity,
+            quantityType: typeof inv.quantity,
+            quantityStringified: JSON.stringify(inv.quantity),
+            converted: qty,
+            hasStock: qty > 0,
+          });
+        });
+      } else {
+        console.error('[products-manage] ERROR: inventory is not an array or is missing');
+        console.error('[products-manage] inventory value:', data?.inventory);
+      }
+      console.log('[products-manage] ===== END RAW API RESPONSE =====');
+      
+      return data;
     },
     enabled: isEditing,
+    staleTime: 0, // Always fetch fresh data
   });
 
   // Populate form when editing
   useEffect(() => {
     if (productData) {
+      console.log('[products-manage] Product data loaded:', {
+        name: productData.name,
+        inventoryCount: productData.inventory?.length || 0,
+        inventory: productData.inventory?.map((inv: InventoryItem) => ({
+          warehouseId: inv.warehouse?.id,
+          warehouseName: inv.warehouse?.name,
+          warehouseType: inv.warehouse?.type,
+          quantity: inv.quantity,
+          quantityType: typeof inv.quantity,
+          converted: getQuantity(inv),
+          hasStock: getQuantity(inv) > 0,
+        })),
+      });
+      
       setName(productData.name || '');
       setSku(productData.sku || '');
       setBarcode(productData.barcode || '');
@@ -235,10 +316,16 @@ export default function ProductsManageScreen() {
         productData.inventory.forEach((inv: InventoryItem) => {
           const warehouseId = inv.warehouseId || inv.warehouse?.id;
           if (warehouseId) {
-            stocks[warehouseId] = inv.quantity?.toString() || '0';
+            // Handle Decimal from Prisma - convert to number then to string
+            const qty = getQuantity(inv);
+            stocks[warehouseId] = qty.toString();
+            console.log(`[products-manage] Warehouse ${inv.warehouse?.name} (${inv.warehouse?.type}): ${qty} units (raw: ${inv.quantity}, type: ${typeof inv.quantity}, hasStock: ${qty > 0})`);
           }
         });
+        console.log(`[products-manage] Initialized stocks for ${Object.keys(stocks).length} warehouses`);
         setWarehouseStocks(stocks);
+      } else {
+        console.warn('[products-manage] No inventory data found in productData');
       }
     }
   }, [productData]);
@@ -987,12 +1074,24 @@ export default function ProductsManageScreen() {
             data={productData?.inventory || []}
             keyExtractor={(item) => item.id}
             renderItem={({ item }: { item: InventoryItem }) => {
-              const qty = Number(item.quantity || 0);
+              const qty = getQuantity(item);
               const isBoutique = item.warehouse.type === 'BOUTIQUE';
               const isStockage = item.warehouse.type === 'STOCKAGE';
-              const currentWarehouse = employee?.warehouse || null;
+              const currentWarehouse = getEffectiveWarehouse();
               const isCurrentWarehouse = currentWarehouse?.id === item.warehouse.id;
               const canEdit = hasPermission('inventory:adjust') && isCurrentWarehouse;
+              
+              // Debug log for Entrepôt Principal
+              if (item.warehouse.name?.toLowerCase().includes('principal')) {
+                console.log(`[Stock Modal] Entrepôt Principal found:`, {
+                  name: item.warehouse.name,
+                  type: item.warehouse.type,
+                  quantity: item.quantity,
+                  qty: qty,
+                  quantityType: typeof item.quantity,
+                  hasStock: qty > 0,
+                });
+              }
               
               return (
                 <View style={[
@@ -1099,20 +1198,138 @@ export default function ProductsManageScreen() {
                       </>
                     )}
                   </View>
-                  {isBoutique && qty === 0 && !editingWarehouseStock && (
+                  {qty === 0 && !editingWarehouseStock && (
                     <TouchableOpacity
                       style={styles.transferButton}
-                      onPress={() => {
+                      onPress={async () => {
+                        // CRITICAL: Log immediately to verify button is clicked
+                        console.log('========================================');
+                        console.log('TRANSFER BUTTON CLICKED - START');
+                        console.log('========================================');
+                        Alert.alert('Info', 'Vérification du stock en cours...');
+                        
                         setShowStockModal(false);
-                        // Find a stockage warehouse with stock
-                        const stockageInv = productData?.inventory?.find((inv: InventoryItem) => 
-                          inv.warehouse.type === 'STOCKAGE' && Number(inv.quantity) > 0
-                        );
-                        if (stockageInv) {
-                          setTransferFromWarehouse(stockageInv.warehouse.id);
+                        
+                        // CRITICAL: Refetch product data to ensure we have the latest inventory
+                        console.log('[Transfer Button] Refetching product data...');
+                        
+                        try {
+                          // Force refetch of product data WITHOUT warehouseId to get ALL warehouses
+                          console.log('[Transfer Button] Calling refetchProduct()...');
+                          const refetchResult = await refetchProduct();
+                          console.log('[Transfer Button] Refetch result:', refetchResult);
+                          const freshProductData = refetchResult.data;
+                          
+                          console.log('[Transfer Button] Fresh product data:', {
+                            exists: !!freshProductData,
+                            name: freshProductData?.name,
+                            inventoryCount: freshProductData?.inventory?.length || 0,
+                          });
+                          
+                          if (!freshProductData) {
+                            console.error('[Transfer Button] ERROR: Failed to refetch product data');
+                            Alert.alert('Erreur', 'Impossible de charger les données du produit. Veuillez réessayer.');
+                            return;
+                          }
+                          
+                          if (!freshProductData.inventory || freshProductData.inventory.length === 0) {
+                            console.error('[Transfer Button] ERROR: No inventory in fresh data');
+                            Alert.alert('Erreur', 'Aucune donnée d\'inventaire trouvée. Veuillez réessayer.');
+                            return;
+                          }
+                          
+                          // Find any warehouse with stock (any type) - check ALL warehouses
+                          const currentWarehouse = getEffectiveWarehouse();
+                          const currentWarehouseId = currentWarehouse?.id;
+                          
+                          console.log('[Transfer Button] Current warehouse:', currentWarehouse?.name, currentWarehouseId);
+                          console.log('[Transfer Button] Fresh product data exists:', !!freshProductData);
+                          console.log('[Transfer Button] Inventory array length:', freshProductData?.inventory?.length || 0);
+                          
+                          // CRITICAL: Log the raw inventory array to see what we actually received
+                          console.log('[Transfer Button] RAW INVENTORY ARRAY:', JSON.stringify(freshProductData.inventory, null, 2));
+                          
+                          if (!freshProductData.inventory || freshProductData.inventory.length === 0) {
+                            console.error('[Transfer Button] ERROR: No inventory data available');
+                            Alert.alert('Erreur', 'Données d\'inventaire non disponibles. Veuillez réessayer.');
+                            return;
+                          }
+                          
+                          // Log all inventory with detailed info
+                          console.log('[Transfer Button] ===== ALL INVENTORY DETAILS =====');
+                          freshProductData.inventory.forEach((inv: InventoryItem, index: number) => {
+                            const qty = getQuantity(inv);
+                            console.log(`[${index}] ${inv.warehouse.name} (${inv.warehouse.type}):`);
+                            console.log(`  - Raw quantity: ${JSON.stringify(inv.quantity)} (type: ${typeof inv.quantity})`);
+                            console.log(`  - Converted quantity: ${qty}`);
+                            console.log(`  - Has stock: ${qty > 0}`);
+                            console.log(`  - Is current warehouse: ${inv.warehouse.id === currentWarehouseId}`);
+                            console.log(`  - Warehouse ID: ${inv.warehouse.id}`);
+                          });
+                          console.log('[Transfer Button] ===== END INVENTORY DETAILS =====');
+                          
+                          // Find ALL warehouses with stock (regardless of current warehouse)
+                          const warehousesWithStock = freshProductData.inventory.filter((inv: InventoryItem) => {
+                            const qty = getQuantity(inv);
+                            const hasStock = qty > 0;
+                            console.log(`[Transfer Button] Filtering ${inv.warehouse.name}: qty=${qty}, hasStock=${hasStock}`);
+                            return hasStock;
+                          });
+                          
+                          console.log(`[Transfer Button] ===== WAREHOUSES WITH STOCK =====`);
+                          console.log(`[Transfer Button] Total warehouses with stock: ${warehousesWithStock.length}`);
+                          warehousesWithStock.forEach((inv: InventoryItem, idx: number) => {
+                            const qty = getQuantity(inv);
+                            console.log(`[${idx}] ${inv.warehouse.name} (${inv.warehouse.type}): ${qty} units`);
+                          });
+                          console.log(`[Transfer Button] ===== END WAREHOUSES WITH STOCK =====`);
+                          
+                          if (warehousesWithStock.length === 0) {
+                            console.error('[Transfer Button] ✗ No stock found in ANY warehouse');
+                            const allInventoryDetails = freshProductData.inventory.map((inv: InventoryItem) => ({
+                              warehouse: inv.warehouse.name,
+                              rawQuantity: inv.quantity,
+                              quantityType: typeof inv.quantity,
+                              converted: getQuantity(inv),
+                            }));
+                            console.error('[Transfer Button] All inventory quantities:', JSON.stringify(allInventoryDetails, null, 2));
+                            
+                            // Show detailed error message
+                            const details = allInventoryDetails.map((inv: any) => 
+                              `${inv.warehouse}: ${inv.converted} (raw: ${inv.rawQuantity}, type: ${inv.quantityType})`
+                            ).join('\n');
+                            
+                            Alert.alert(
+                              'Aucun stock disponible', 
+                              `Aucun entrepôt n'a de stock disponible pour ce produit.\n\nDétails:\n${details}\n\nVérifiez les logs de la console pour plus d'informations.`
+                            );
+                            return;
+                          }
+                          
+                          // Prefer a warehouse that is NOT the current one, but if only current has stock, use it anyway
+                          let sourceWarehouse = warehousesWithStock.find((inv: InventoryItem) => {
+                            return inv.warehouse.id !== currentWarehouseId;
+                          });
+                          
+                          // If no other warehouse has stock, use the first one with stock (even if it's current)
+                          if (!sourceWarehouse) {
+                            sourceWarehouse = warehousesWithStock[0];
+                            console.log('[Transfer Button] ⚠ Only current warehouse has stock, using it as source');
+                          }
+                          
+                          const qty = getQuantity(sourceWarehouse);
+                          console.log('[Transfer Button] ✓ Selected source warehouse:', sourceWarehouse.warehouse.name, qty, 'units');
+                          console.log('[Transfer Button] Current warehouse ID:', currentWarehouseId);
+                          console.log('[Transfer Button] Source warehouse ID:', sourceWarehouse.warehouse.id);
+                          
+                          setTransferFromWarehouse(sourceWarehouse.warehouse.id);
+                          if (currentWarehouseId && currentWarehouseId !== sourceWarehouse.warehouse.id) {
+                            setTransferToWarehouse(currentWarehouseId);
+                          }
                           setShowTransferModal(true);
-                        } else {
-                          Alert.alert('Aucun stock disponible', 'Aucun entrepôt Stockage n\'a de stock disponible pour ce produit');
+                        } catch (error) {
+                          console.error('[Transfer Button] ERROR during refetch:', error);
+                          Alert.alert('Erreur', 'Une erreur est survenue lors du chargement des données.');
                         }
                       }}
                     >
@@ -1193,6 +1410,7 @@ export default function ProductsManageScreen() {
         onRequestClose={() => {
           setShowTransferModal(false);
           setTransferFromWarehouse(null);
+          setTransferToWarehouse(null);
           setTransferQuantity('');
         }}
       >
@@ -1204,6 +1422,7 @@ export default function ProductsManageScreen() {
               onPress={() => {
                 setShowTransferModal(false);
                 setTransferFromWarehouse(null);
+                setTransferToWarehouse(null);
                 setTransferQuantity('');
               }}
             >
@@ -1213,45 +1432,143 @@ export default function ProductsManageScreen() {
 
           <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
             <Text style={styles.modalSubtitle}>
-              Transférer depuis un entrepôt Stockage vers une Boutique
+              Transférer du stock entre entrepôts
             </Text>
 
             {/* Source Warehouse Selection */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Depuis (Stockage) *</Text>
-              <FlatList
-                data={productData?.inventory?.filter((inv: InventoryItem) => 
-                  inv.warehouse.type === 'STOCKAGE' && Number(inv.quantity) > 0
-                ) || []}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item }: { item: InventoryItem }) => (
-                  <TouchableOpacity
-                    style={[
-                      styles.warehouseOption,
-                      transferFromWarehouse === item.warehouse.id && styles.warehouseOptionSelected
-                    ]}
-                    onPress={() => setTransferFromWarehouse(item.warehouse.id)}
-                  >
-                    <View style={styles.warehouseOptionInfo}>
-                      <Text style={styles.warehouseOptionName}>{item.warehouse.name}</Text>
-                      <Text style={styles.warehouseOptionStock}>
-                        Disponible: {Number(item.quantity)}
+              <Text style={styles.label}>Depuis *</Text>
+              {(() => {
+                console.log('[Transfer Modal] ===== TRANSFER MODAL OPENED =====');
+                console.log('[Transfer Modal] Product data exists:', !!productData);
+                console.log('[Transfer Modal] Inventory array length:', productData?.inventory?.length || 0);
+                console.log('[Transfer Modal] Transfer destination:', transferToWarehouse);
+                
+                if (!productData || !productData.inventory || productData.inventory.length === 0) {
+                  console.error('[Transfer Modal] ERROR: No inventory data');
+                  return (
+                    <View style={{ padding: spacing.md }}>
+                      <Text style={[styles.helperText, { color: colors.danger }]}>
+                        Erreur: Données d'inventaire non disponibles
                       </Text>
                     </View>
-                    {transferFromWarehouse === item.warehouse.id && (
-                      <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                  );
+                }
+                
+                const availableSources = productData.inventory.filter((inv: InventoryItem) => {
+                  const qty = getQuantity(inv);
+                  const hasStock = qty > 0;
+                  const isNotDestination = inv.warehouse.id !== transferToWarehouse;
+                  console.log(`[Transfer Modal] Filtering ${inv.warehouse.name}: qty=${qty}, hasStock=${hasStock}, isNotDestination=${isNotDestination}`);
+                  return hasStock && isNotDestination;
+                });
+                
+                console.log('[Transfer Modal] All inventory:', productData.inventory.map((inv: InventoryItem) => ({
+                  warehouse: inv.warehouse.name,
+                  warehouseId: inv.warehouse.id,
+                  warehouseType: inv.warehouse.type,
+                  quantity: inv.quantity,
+                  quantityType: typeof inv.quantity,
+                  converted: getQuantity(inv),
+                  hasStock: getQuantity(inv) > 0,
+                })));
+                
+                console.log('[Transfer Modal] ✓ Available source warehouses:', availableSources.length);
+                availableSources.forEach((inv: InventoryItem) => {
+                  console.log(`  - ${inv.warehouse.name} (${inv.warehouse.type}): ${getQuantity(inv)} units`);
+                });
+                
+                return (
+                  <FlatList
+                    data={availableSources}
+                    keyExtractor={(item) => item.id}
+                    renderItem={({ item }: { item: InventoryItem }) => (
+                      <TouchableOpacity
+                        style={[
+                          styles.warehouseOption,
+                          transferFromWarehouse === item.warehouse.id && styles.warehouseOptionSelected
+                        ]}
+                        onPress={() => setTransferFromWarehouse(item.warehouse.id)}
+                      >
+                        <View style={styles.warehouseOptionInfo}>
+                          <Text style={styles.warehouseOptionName}>
+                            {item.warehouse.name} ({item.warehouse.type})
+                          </Text>
+                      <Text style={styles.warehouseOptionStock}>
+                        Disponible: {(() => {
+                          if (typeof item.quantity === 'number') return item.quantity;
+                          if (typeof item.quantity === 'string') return Number(item.quantity) || 0;
+                          if (item.quantity && typeof item.quantity === 'object' && 'toNumber' in item.quantity) {
+                            return (item.quantity as any).toNumber();
+                          }
+                          return Number(item.quantity) || 0;
+                        })()}
+                      </Text>
+                        </View>
+                        {transferFromWarehouse === item.warehouse.id && (
+                          <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                        )}
+                      </TouchableOpacity>
                     )}
-                  </TouchableOpacity>
-                )}
-              />
+                    ListEmptyComponent={
+                      <View style={{ padding: spacing.md }}>
+                        <Text style={[styles.helperText, { marginBottom: spacing.sm }]}>
+                          Aucun entrepôt avec stock disponible pour ce produit
+                        </Text>
+                        <Text style={[styles.helperText, { fontSize: fontSize.xs, color: colors.textMuted }]}>
+                          Total entrepôts dans le système: {productData?.inventory?.length || 0}
+                        </Text>
+                        <Text style={[styles.helperText, { fontSize: fontSize.xs, color: colors.textMuted }]}>
+                          Entrepôts avec stock: {productData?.inventory?.filter((inv: InventoryItem) => {
+                            const qty = typeof inv.quantity === 'number' ? inv.quantity : 
+                                       typeof inv.quantity === 'string' ? Number(inv.quantity) || 0 :
+                                       (inv.quantity && typeof inv.quantity === 'object' && 'toNumber' in inv.quantity) ? 
+                                         (inv.quantity as any).toNumber() : Number(inv.quantity) || 0;
+                            return qty > 0;
+                          }).length || 0}
+                        </Text>
+                      </View>
+                    }
+                  />
+                );
+              })()}
             </View>
 
             {/* Destination Warehouse Selection */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Vers (Boutique) *</Text>
-              <Text style={styles.helperText}>
-                {employee?.warehouse?.name || 'Votre entrepôt actuel'}
-              </Text>
+              <Text style={styles.label}>Vers *</Text>
+              <FlatList
+                data={availableWarehousesForTransfer?.filter((w: any) => 
+                  w.id !== transferFromWarehouse
+                ) || []}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }: { item: Warehouse }) => (
+                  <TouchableOpacity
+                    style={[
+                      styles.warehouseOption,
+                      transferToWarehouse === item.id && styles.warehouseOptionSelected
+                    ]}
+                    onPress={() => setTransferToWarehouse(item.id)}
+                  >
+                    <View style={styles.warehouseOptionInfo}>
+                      <Text style={styles.warehouseOptionName}>
+                        {item.name} ({item.type})
+                      </Text>
+                      <Text style={styles.warehouseOptionStock}>
+                        {item.code}
+                      </Text>
+                    </View>
+                    {transferToWarehouse === item.id && (
+                      <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                    )}
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={
+                  <Text style={[styles.helperText, { padding: spacing.md }]}>
+                    Aucun entrepôt disponible
+                  </Text>
+                }
+              />
             </View>
 
             {/* Quantity */}
@@ -1266,13 +1583,20 @@ export default function ProductsManageScreen() {
                 keyboardType="numeric"
               />
               {transferFromWarehouse && (
-                <Text style={{ fontSize: fontSize.sm, color: colors.textMuted, marginTop: spacing.xs }}>
-                  Maximum disponible: {
-                    productData?.inventory?.find((inv: InventoryItem) => 
-                      inv.warehouse.id === transferFromWarehouse
-                    )?.quantity || 0
-                  }
-                </Text>
+                        <Text style={{ fontSize: fontSize.sm, color: colors.textMuted, marginTop: spacing.xs }}>
+                          Maximum disponible: {(() => {
+                            const inv = productData?.inventory?.find((inv: InventoryItem) => 
+                              inv.warehouse.id === transferFromWarehouse
+                            );
+                            if (!inv) return 0;
+                            if (typeof inv.quantity === 'number') return inv.quantity;
+                            if (typeof inv.quantity === 'string') return Number(inv.quantity) || 0;
+                            if (inv.quantity && typeof inv.quantity === 'object' && 'toNumber' in inv.quantity) {
+                              return (inv.quantity as any).toNumber();
+                            }
+                            return Number(inv.quantity) || 0;
+                          })()}
+                        </Text>
               )}
             </View>
 
@@ -1293,12 +1617,17 @@ export default function ProductsManageScreen() {
             <TouchableOpacity
               style={[
                 styles.submitButton,
-                (!transferFromWarehouse || !transferQuantity || Number(transferQuantity) <= 0) &&
+                (!transferFromWarehouse || !transferToWarehouse || !transferQuantity || Number(transferQuantity) <= 0) &&
                   styles.submitButtonDisabled
               ]}
               onPress={async () => {
-                if (!transferFromWarehouse || !transferQuantity || Number(transferQuantity) <= 0) {
-                  Alert.alert('Erreur', 'Veuillez remplir tous les champs requis');
+                if (!transferFromWarehouse || !transferToWarehouse || !transferQuantity || Number(transferQuantity) <= 0) {
+                  Alert.alert('Erreur', 'Veuillez sélectionner les entrepôts source et destination, et entrer une quantité');
+                  return;
+                }
+
+                if (transferFromWarehouse === transferToWarehouse) {
+                  Alert.alert('Erreur', 'Les entrepôts source et destination doivent être différents');
                   return;
                 }
 
@@ -1308,22 +1637,16 @@ export default function ProductsManageScreen() {
                 const maxQty = Number(fromInv?.quantity || 0);
 
                 if (Number(transferQuantity) > maxQty) {
-                  Alert.alert('Erreur', `Quantité insuffisante. Maximum: ${maxQty}`);
+                  Alert.alert('Erreur', `Quantité insuffisante. Maximum disponible: ${maxQty}`);
                   return;
                 }
 
                 try {
-                  const currentWarehouse = employee?.warehouse;
-                  if (!currentWarehouse) {
-                    Alert.alert('Erreur', 'Aucun entrepôt sélectionné');
-                    return;
-                  }
-
-                  // Create transfer request instead of direct transfer
+                  // Create transfer request
                   await api.post('/inventory/transfer-requests', {
                     productId: productId,
                     fromWarehouseId: transferFromWarehouse,
-                    toWarehouseId: currentWarehouse.id,
+                    toWarehouseId: transferToWarehouse,
                     quantity: Number(transferQuantity),
                     notes: 'Transfert demandé depuis l\'application mobile',
                   });
@@ -1336,6 +1659,7 @@ export default function ProductsManageScreen() {
                       { text: 'OK', onPress: () => {
                         setShowTransferModal(false);
                         setTransferFromWarehouse(null);
+                        setTransferToWarehouse(null);
                         setTransferQuantity('');
                         queryClient.invalidateQueries({ queryKey: ['product', productId] });
                         queryClient.invalidateQueries({ queryKey: ['transfer-requests'] });
@@ -1348,7 +1672,7 @@ export default function ProductsManageScreen() {
                   Alert.alert('Erreur', message);
                 }
               }}
-              disabled={!transferFromWarehouse || !transferQuantity || Number(transferQuantity) <= 0}
+              disabled={!transferFromWarehouse || !transferToWarehouse || !transferQuantity || Number(transferQuantity) <= 0}
             >
               <Text style={styles.submitButtonText}>Demander le transfert</Text>
             </TouchableOpacity>

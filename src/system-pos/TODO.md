@@ -364,5 +364,25 @@ Ce document liste toutes les fonctionnalités documentées dans `ARCHITECTURE.md
 
 ---
 
-**Dernière mise à jour**: 2024-12-24
-**Total des tâches**: 27
+## 🚀 Améliorations Futures
+
+### Court Terme (1-2 semaines)
+- [ ] **future-1**: Monitoring et dashboard pour alertes
+- [ ] **future-2**: Amélioration de l'interface utilisateur selon retours utilisateurs
+
+### Moyen Terme (1-2 mois)
+- [ ] **future-3**: Notifications push pour alertes critiques
+- [ ] **future-4**: Optimisation des performances (cache, pagination)
+- [ ] **future-5**: Amélioration de la gestion des erreurs et messages utilisateur
+
+### Long Terme (3+ mois)
+- [ ] **future-6**: Rapports avancés et analytics
+- [ ] **future-7**: Mode hors ligne avec synchronisation
+- [ ] **future-8**: Intégration avec systèmes externes
+- [ ] **future-9**: Export de données (Excel, PDF)
+- [ ] **future-10**: Système de sauvegarde automatique
+
+---
+
+**Dernière mise à jour**: 2024-12-26
+**Total des tâches**: 37

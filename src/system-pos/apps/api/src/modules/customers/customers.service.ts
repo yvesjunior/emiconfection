@@ -167,13 +167,10 @@ export async function redeemLoyaltyPoints(id: string, points: number) {
     throw ApiError.badRequest(`Insufficient loyalty points. Customer has ${customer.loyaltyPoints} points.`);
   }
 
-  // Get conversion rate from settings
-  const conversionRateSetting = await prisma.setting.findUnique({
-    where: { key: 'loyalty_points_conversion_rate' },
-  });
-
-  const conversionRate = conversionRateSetting 
-    ? Number(conversionRateSetting.value) 
+  // Get conversion rate from SystemSettings (global settings, admin-only)
+  const systemSettings = await prisma.systemSettings.findFirst();
+  const conversionRate = systemSettings?.loyaltyPointsConversionRate
+    ? Number(systemSettings.loyaltyPointsConversionRate)
     : 1.0; // Default: 1 point = 1 FCFA
 
   // Calculate discount amount

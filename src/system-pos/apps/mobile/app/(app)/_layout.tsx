@@ -3,6 +3,7 @@ import { Tabs, useRouter } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../src/store/auth';
 import { useAppModeStore } from '../../src/store/appMode';
 import { useOfflineQueueStore } from '../../src/store/offlineQueue';
@@ -19,12 +20,27 @@ export default function AppLayout() {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isLoading = useAuthStore((state) => state.isLoading);
+  const employee = useAuthStore((state) => state.employee);
   const mode = useAppModeStore((state) => state.mode);
   const canSwitchMode = useAppModeStore((state) => state.canSwitchMode);
   const setMode = useAppModeStore((state) => state.setMode);
   const isOnline = useOfflineQueueStore((state) => state.isOnline);
   const pendingSales = useOfflineQueueStore((state) => state.pendingSales);
   const pendingCount = pendingSales.filter((s) => !s.synced).length;
+  const isAdmin = employee?.role?.name === 'admin';
+
+  // Fetch unread alerts count for admin
+  const { data: unreadAlertsData } = useQuery({
+    queryKey: ['alerts', 'count'],
+    queryFn: async () => {
+      const res = await api.get('/alerts/count');
+      return res.data;
+    },
+    enabled: isAdmin && mode === 'manage',
+    refetchInterval: 30000, // Refetch every 30 seconds
+  });
+
+  const unreadAlertsCount = unreadAlertsData?.count || 0;
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -153,6 +169,50 @@ export default function AppLayout() {
         }}
       />
       <Tabs.Screen
+        name="alerts-list"
+        options={{
+          title: 'Alertes',
+          href: mode === 'sell' || !isAdmin ? null : '/(app)/alerts-list', // Only show in manage mode for admins
+          tabBarIcon: ({ color, size }) => (
+            <View style={{ position: 'relative' }}>
+              <Ionicons name="notifications" size={size} color={color} />
+              {unreadAlertsCount > 0 && (
+                <View style={{
+                  position: 'absolute',
+                  top: -4,
+                  right: -8,
+                  backgroundColor: colors.danger,
+                  borderRadius: borderRadius.full,
+                  minWidth: 18,
+                  height: 18,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  paddingHorizontal: 4,
+                }}>
+                  <Text style={{
+                    color: colors.white,
+                    fontSize: 10,
+                    fontWeight: '700',
+                  }}>
+                    {unreadAlertsCount > 99 ? '99+' : unreadAlertsCount}
+                  </Text>
+                </View>
+              )}
+            </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="transfer-requests-list"
+        options={{
+          title: 'Transferts',
+          href: mode === 'sell' ? null : '/(app)/transfer-requests-list', // Only show in manage mode
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="swap-horizontal" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="sales"
         options={{
           title: 'Ventes',
@@ -240,10 +300,6 @@ export default function AppLayout() {
       />
       <Tabs.Screen
         name="settings-loyalty"
-        options={{ href: null }}
-      />
-      <Tabs.Screen
-        name="transfer-requests-list"
         options={{ href: null }}
       />
       <Tabs.Screen

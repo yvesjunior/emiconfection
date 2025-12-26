@@ -29,9 +29,11 @@ export default function WarehousesManageScreen() {
   const queryClient = useQueryClient();
   const { warehouseId } = useLocalSearchParams<{ warehouseId?: string }>();
   const hasPermission = useAuthStore((state) => state.hasPermission);
+  const employee = useAuthStore((state) => state.employee);
 
   const isEditing = !!warehouseId;
   const canManage = hasPermission('warehouses:manage');
+  const isAdmin = employee?.role?.name === 'admin';
 
   // Form state
   const [name, setName] = useState('');
@@ -42,14 +44,6 @@ export default function WarehousesManageScreen() {
   const [isActive, setIsActive] = useState(true);
   const [isDefault, setIsDefault] = useState(false);
 
-  // Check permission
-  useEffect(() => {
-    if (!canManage) {
-      Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de gérer les entrepôts');
-      router.back();
-    }
-  }, [canManage, router]);
-
   // Fetch warehouse if editing
   const { data: warehouseData, isLoading: isLoadingWarehouse } = useQuery({
     queryKey: ['warehouse', warehouseId],
@@ -57,8 +51,27 @@ export default function WarehousesManageScreen() {
       const res = await api.get(`/warehouses/${warehouseId}`);
       return res.data.data;
     },
-    enabled: isEditing,
+    enabled: isEditing && !!warehouseId,
   });
+
+  // Check permission and warehouse access
+  useEffect(() => {
+    if (isEditing && warehouseData) {
+      // Check if user has access to this warehouse
+      const hasWarehouseAccess = isAdmin || 
+        employee?.warehouses?.some((ew: any) => ew.id === warehouseData.id) ||
+        employee?.warehouse?.id === warehouseData.id;
+      
+      if (!canManage && !hasWarehouseAccess) {
+        Alert.alert('Accès refusé', 'Vous n\'avez pas accès à cet entrepôt');
+        router.back();
+      }
+    } else if (!isEditing && !canManage) {
+      // Creating new warehouse requires warehouses:manage permission
+      Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de créer des entrepôts');
+      router.back();
+    }
+  }, [canManage, isEditing, warehouseData, isAdmin, employee, router]);
 
   // Populate form when editing
   useEffect(() => {
@@ -199,19 +212,23 @@ export default function WarehousesManageScreen() {
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
-          {isEditing ? 'Modifier l\'entrepôt' : 'Nouvel entrepôt'}
+          {isEditing 
+            ? (canManage ? 'Modifier l\'entrepôt' : 'Détails de l\'entrepôt')
+            : 'Nouvel entrepôt'}
         </Text>
-        <TouchableOpacity
-          style={[styles.saveButton, saveMutation.isPending && styles.saveButtonDisabled]}
-          onPress={handleSave}
-          disabled={saveMutation.isPending}
-        >
-          {saveMutation.isPending ? (
-            <ActivityIndicator size="small" color={colors.textInverse} />
-          ) : (
-            <Ionicons name="checkmark" size={24} color={colors.textInverse} />
-          )}
-        </TouchableOpacity>
+        {canManage && (
+          <TouchableOpacity
+            style={[styles.saveButton, saveMutation.isPending && styles.saveButtonDisabled]}
+            onPress={handleSave}
+            disabled={saveMutation.isPending}
+          >
+            {saveMutation.isPending ? (
+              <ActivityIndicator size="small" color={colors.textInverse} />
+            ) : (
+              <Ionicons name="checkmark" size={24} color={colors.textInverse} />
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       <KeyboardAvoidingView
@@ -226,11 +243,12 @@ export default function WarehousesManageScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Nom de l'entrepôt *</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, !canManage && styles.inputDisabled]}
                 value={name}
                 onChangeText={setName}
                 placeholder="Ex: Entrepôt Principal"
                 placeholderTextColor={colors.textMuted}
+                editable={canManage}
               />
             </View>
 
@@ -238,16 +256,19 @@ export default function WarehousesManageScreen() {
               <Text style={styles.label}>Code *</Text>
               <View style={styles.codeContainer}>
                 <TextInput
-                  style={[styles.input, styles.codeInput]}
+                  style={[styles.input, styles.codeInput, !canManage && styles.inputDisabled]}
                   value={code}
                   onChangeText={(text) => setCode(text.toUpperCase())}
                   placeholder="Ex: ENT-001"
                   placeholderTextColor={colors.textMuted}
                   autoCapitalize="characters"
+                  editable={canManage}
                 />
-                <TouchableOpacity style={styles.generateButton} onPress={generateCode}>
-                  <Ionicons name="refresh" size={20} color={colors.primary} />
-                </TouchableOpacity>
+                {canManage && (
+                  <TouchableOpacity style={styles.generateButton} onPress={generateCode}>
+                    <Ionicons name="refresh" size={20} color={colors.primary} />
+                  </TouchableOpacity>
+                )}
               </View>
               <Text style={styles.helperText}>
                 Code unique pour identifier l'entrepôt
@@ -261,8 +282,10 @@ export default function WarehousesManageScreen() {
                   style={[
                     styles.typeOption,
                     type === 'BOUTIQUE' && styles.typeOptionActive,
+                    !canManage && styles.typeOptionDisabled,
                   ]}
-                  onPress={() => setType('BOUTIQUE')}
+                  onPress={() => canManage && setType('BOUTIQUE')}
+                  disabled={!canManage}
                 >
                   <Ionicons
                     name="storefront"
@@ -285,8 +308,10 @@ export default function WarehousesManageScreen() {
                   style={[
                     styles.typeOption,
                     type === 'STOCKAGE' && styles.typeOptionActive,
+                    !canManage && styles.typeOptionDisabled,
                   ]}
-                  onPress={() => setType('STOCKAGE')}
+                  onPress={() => canManage && setType('STOCKAGE')}
+                  disabled={!canManage}
                 >
                   <Ionicons
                     name="archive"
@@ -316,23 +341,25 @@ export default function WarehousesManageScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Adresse</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, !canManage && styles.inputDisabled]}
                 value={address}
                 onChangeText={setAddress}
                 placeholder="Adresse complète de l'entrepôt"
                 placeholderTextColor={colors.textMuted}
+                editable={canManage}
               />
             </View>
 
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Téléphone</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, !canManage && styles.inputDisabled]}
                 value={phone}
                 onChangeText={setPhone}
                 placeholder="Ex: +225 07 12 34 56 78"
                 placeholderTextColor={colors.textMuted}
                 keyboardType="phone-pad"
+                editable={canManage}
               />
             </View>
           </View>
@@ -342,8 +369,9 @@ export default function WarehousesManageScreen() {
             <Text style={styles.sectionTitle}>Statut</Text>
 
             <TouchableOpacity
-              style={styles.statusToggle}
-              onPress={() => setIsActive(!isActive)}
+              style={[styles.statusToggle, !canManage && styles.statusToggleDisabled]}
+              onPress={() => canManage && setIsActive(!isActive)}
+              disabled={!canManage}
             >
               <View style={styles.statusToggleContent}>
                 <View style={[styles.statusIndicator, isActive ? styles.statusActive : styles.statusInactive]} />
@@ -371,8 +399,9 @@ export default function WarehousesManageScreen() {
             <Text style={styles.sectionTitle}>Configuration</Text>
 
             <TouchableOpacity
-              style={styles.statusToggle}
-              onPress={() => setIsDefault(!isDefault)}
+              style={[styles.statusToggle, !canManage && styles.statusToggleDisabled]}
+              onPress={() => canManage && setIsDefault(!isDefault)}
+              disabled={!canManage}
             >
               <View style={styles.statusToggleContent}>
                 <View style={[styles.statusIndicator, isDefault ? styles.statusDefault : styles.statusInactive]} />
@@ -626,6 +655,16 @@ const styles = StyleSheet.create({
     fontSize: fontSize.xs,
     color: colors.textMuted,
     textAlign: 'center',
+  },
+  inputDisabled: {
+    backgroundColor: colors.surfaceSecondary + '80',
+    opacity: 0.6,
+  },
+  typeOptionDisabled: {
+    opacity: 0.6,
+  },
+  statusToggleDisabled: {
+    opacity: 0.6,
   },
 });
 

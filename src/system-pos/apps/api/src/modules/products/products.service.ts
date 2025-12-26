@@ -4,6 +4,7 @@ import { ApiError, PaginationQuery } from '../../common/types/index.js';
 import { getPaginationParams, createPaginatedResponse } from '../../common/utils/pagination.js';
 import { requireWarehouseAccess } from '../../common/middleware/auth.js';
 import { CreateProductInput, UpdateProductInput } from './products.schema.js';
+import { createStockReductionAlert, createProductDeletionAlert } from '../alerts/alerts.helper.js';
 
 interface ProductQuery extends PaginationQuery {
   search?: string;
@@ -87,23 +88,31 @@ export async function getProducts(query: ProductQuery) {
       
       // If no inventory entry exists for this warehouse, create a virtual one with 0 stock
       if (!inventory || inventory.length === 0) {
+        const warehouseId = query.warehouseId!; // Safe because we're in the warehouseId branch
         inventory = [{
-          id: `temp-${product.id}-${query.warehouseId}`,
+          id: `temp-${product.id}-${warehouseId}`,
           productId: product.id,
-          warehouseId: query.warehouseId,
-          quantity: new Decimal(0),
-          minStockLevel: new Decimal(0),
+          warehouseId: warehouseId,
+          quantity: 0, // Use number instead of Decimal for JSON serialization
+          minStockLevel: 0,
           maxStockLevel: null,
           lastRestockedAt: null,
           createdAt: product.createdAt,
           updatedAt: product.updatedAt,
           warehouse: warehouse || {
-            id: query.warehouseId,
+            id: warehouseId,
             name: 'Unknown',
             code: 'UNK',
             type: 'BOUTIQUE' as const,
           },
-        }];
+        }] as any; // Type assertion needed because we're using numbers instead of Decimal
+      } else {
+        // Convert Decimal to number for proper JSON serialization
+        inventory = inventory.map((inv) => ({
+          ...inv,
+          quantity: Number(inv.quantity),
+          minStockLevel: Number(inv.minStockLevel || 0),
+        })) as any; // Type assertion needed because we're converting Decimal to number
       }
 
       return {
@@ -141,10 +150,15 @@ export async function getProducts(query: ProductQuery) {
     prisma.product.count({ where }),
   ]);
 
-  // Transform to include flattened categories array
+  // Transform to include flattened categories array and convert Decimal to number
   const transformedProducts = products.map((product) => ({
     ...product,
     categories: product.categories.map((pc) => pc.category),
+    inventory: product.inventory.map((inv) => ({
+      ...inv,
+      quantity: Number(inv.quantity), // Convert Decimal to number for JSON serialization
+      minStockLevel: Number(inv.minStockLevel || 0),
+    })) as any, // Type assertion needed because we're converting Decimal to number
   }));
 
   return createPaginatedResponse(transformedProducts, total, page, limit);
@@ -171,10 +185,56 @@ export async function getProductById(id: string) {
     throw ApiError.notFound('Product not found');
   }
 
+  // Get all active warehouses to ensure we show inventory for all warehouses
+  const allWarehouses = await prisma.warehouse.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true, code: true, type: true },
+  });
+
+  console.log(`[getProductById] Product ${product.name} (${product.id}): Found ${allWarehouses.length} active warehouses`);
+  console.log(`[getProductById] Product has ${product.inventory.length} existing inventory entries`);
+
+  // Create a map of existing inventory entries by warehouseId
+  const inventoryMap = new Map(
+    product.inventory.map((inv) => [inv.warehouseId, inv])
+  );
+
+  // Ensure all warehouses have an inventory entry (virtual with 0 stock if missing)
+  const completeInventory = allWarehouses.map((warehouse) => {
+    const existingInv = inventoryMap.get(warehouse.id);
+    if (existingInv) {
+      const qty = Number(existingInv.quantity);
+      console.log(`[getProductById] Warehouse ${warehouse.name} (${warehouse.type}): ${qty} units (raw: ${existingInv.quantity}, type: ${typeof existingInv.quantity})`);
+      // Ensure quantity is properly serialized (convert Decimal to number for JSON)
+      return {
+        ...existingInv,
+        quantity: qty, // Convert Decimal to number for proper JSON serialization
+        minStockLevel: Number(existingInv.minStockLevel || 0),
+      };
+    }
+    // Create virtual inventory entry with 0 stock
+    console.log(`[getProductById] Warehouse ${warehouse.name} (${warehouse.type}): Creating virtual entry with 0 stock`);
+    return {
+      id: `temp-${product.id}-${warehouse.id}`,
+      productId: product.id,
+      warehouseId: warehouse.id,
+      quantity: 0, // Use number instead of Decimal for JSON serialization
+      minStockLevel: 0,
+      maxStockLevel: null,
+      lastRestockedAt: null,
+      createdAt: product.createdAt,
+      updatedAt: product.updatedAt,
+      warehouse: warehouse,
+    };
+  });
+
+  console.log(`[getProductById] Returning ${completeInventory.length} inventory entries for product ${product.name}`);
+
   // Transform to flatten categories
   return {
     ...product,
     categories: product.categories.map((pc) => pc.category),
+    inventory: completeInventory,
   };
 }
 
@@ -380,6 +440,19 @@ export async function updateProduct(id: string, input: UpdateProductInput, emplo
     // Update stock if provided
     if (stock !== undefined && warehouseId) {
       // Access already validated above
+      // Get current inventory to detect stock reduction
+      const currentInventory = await tx.inventory.findUnique({
+        where: {
+          productId_warehouseId: {
+            productId: id,
+            warehouseId: warehouseId,
+          },
+        },
+      });
+
+      const oldQuantity = currentInventory ? Number(currentInventory.quantity) : 0;
+      const newQuantity = Number(stock);
+
       await tx.inventory.upsert({
         where: {
           productId_warehouseId: {
@@ -398,6 +471,40 @@ export async function updateProduct(id: string, input: UpdateProductInput, emplo
           minStockLevel: minStockLevel ?? 1,
         },
       });
+
+      // Create alert for stock reduction (only if quantity decreased)
+      if (employeeId && newQuantity < oldQuantity) {
+        // Get employee and warehouse info for alert
+        const [employee, warehouse] = await Promise.all([
+          tx.employee.findUnique({
+            where: { id: employeeId },
+            select: { fullName: true },
+          }),
+          tx.warehouse.findUnique({
+            where: { id: warehouseId },
+            select: { name: true },
+          }),
+        ]);
+
+        if (employee && warehouse && updatedProduct) {
+          // Create alert asynchronously (don't block the transaction)
+          setImmediate(async () => {
+            try {
+              await createStockReductionAlert(
+                id,
+                updatedProduct.name,
+                warehouseId,
+                warehouse.name,
+                oldQuantity,
+                newQuantity,
+                employee.fullName
+              );
+            } catch (error) {
+              console.error('Failed to create stock reduction alert:', error);
+            }
+          });
+        }
+      }
     }
 
     // Fetch updated product with categories
@@ -419,7 +526,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, emplo
   };
 }
 
-export async function deleteProduct(id: string, employeeRoleName: string) {
+export async function deleteProduct(id: string, employeeRoleName: string, employeeId?: string) {
   // Only admin can delete products from database
   if (employeeRoleName !== 'admin') {
     throw ApiError.forbidden('Only administrators can delete products from the database');
@@ -431,6 +538,18 @@ export async function deleteProduct(id: string, employeeRoleName: string) {
 
   if (!product) {
     throw ApiError.notFound('Product not found');
+  }
+
+  // Get employee info for alert (before deletion)
+  let employeeName = 'Admin';
+  if (employeeId) {
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      select: { fullName: true },
+    });
+    if (employee) {
+      employeeName = employee.fullName;
+    }
   }
 
   // Check if product has been used in sales
@@ -454,6 +573,15 @@ export async function deleteProduct(id: string, employeeRoleName: string) {
       `Cannot delete product that has been used in ${purchaseOrderItemsCount} purchase order(s). The product must remain for historical records.`
     );
   }
+
+  // Create alert before deletion
+  setImmediate(async () => {
+    try {
+      await createProductDeletionAlert(id, product.name, employeeName);
+    } catch (error) {
+      console.error('Failed to create product deletion alert:', error);
+    }
+  });
 
   // Hard delete - delete the product and all related data in a transaction
   // Prisma will cascade delete:

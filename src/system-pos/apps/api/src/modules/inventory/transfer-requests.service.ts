@@ -4,6 +4,12 @@ import { getPaginationParams, createPaginatedResponse } from '../../common/utils
 import { CreateTransferRequestInput, ApproveTransferRequestInput } from './transfer-requests.schema.js';
 import { transferStock } from './inventory.service.js';
 import { TransferStockInput } from './inventory.schema.js';
+import {
+  createTransferRequestAlert,
+  createTransferApprovalAlert,
+  createTransferRejectionAlert,
+  createTransferReceptionAlert,
+} from '../alerts/alerts.helper.js';
 
 interface TransferRequestQuery extends PaginationQuery {
   status?: string;
@@ -19,24 +25,69 @@ export async function getTransferRequests(query: TransferRequestQuery, employeeI
   if (query.status) where.status = query.status;
   if (query.productId) where.productId = query.productId;
   if (query.warehouseId) {
-    // For managers, show requests for their assigned warehouses (source)
+    // For managers, verify they have access to the filtered warehouse
     if (employeeRole === 'manager') {
-      where.fromWarehouseId = query.warehouseId;
-    } else {
-      where.OR = [
-        { fromWarehouseId: query.warehouseId },
-        { toWarehouseId: query.warehouseId },
-      ];
+      const employee = await prisma.employee.findUnique({
+        where: { id: employeeId },
+        include: {
+          warehouses: {
+            select: { warehouseId: true },
+          },
+        },
+      });
+
+      if (employee) {
+        const assignedWarehouseIds = employee.warehouses.map((ew) => ew.warehouseId);
+        if (employee.warehouseId) {
+          assignedWarehouseIds.push(employee.warehouseId);
+        }
+        const uniqueWarehouseIds = [...new Set(assignedWarehouseIds)];
+        
+        // Verify the filtered warehouse is in the manager's assigned warehouses
+        if (!uniqueWarehouseIds.includes(query.warehouseId)) {
+          // Manager doesn't have access to this warehouse, return empty
+          return createPaginatedResponse([], 0, page, limit);
+        }
+      } else {
+        // Employee not found, return empty
+        return createPaginatedResponse([], 0, page, limit);
+      }
     }
+    
+    // Apply warehouse filter (for both admin and manager)
+    where.OR = [
+      { fromWarehouseId: query.warehouseId },
+      { toWarehouseId: query.warehouseId },
+    ];
   } else if (employeeRole === 'manager') {
-    // Manager sees only requests for their assigned warehouses
+    // Manager sees requests for warehouses they are assigned to (source OR destination)
     const employee = await prisma.employee.findUnique({
       where: { id: employeeId },
-      include: { warehouse: true },
+      include: {
+        warehouses: {
+          select: { warehouseId: true },
+        },
+      },
     });
 
-    if (employee?.warehouseId) {
-      where.fromWarehouseId = employee.warehouseId;
+    if (employee && employee.warehouses.length > 0) {
+      const assignedWarehouseIds = employee.warehouses.map((ew) => ew.warehouseId);
+      // Also include primary warehouseId for backward compatibility
+      if (employee.warehouseId) {
+        assignedWarehouseIds.push(employee.warehouseId);
+      }
+      const uniqueWarehouseIds = [...new Set(assignedWarehouseIds)];
+      
+      where.OR = [
+        { fromWarehouseId: { in: uniqueWarehouseIds } },
+        { toWarehouseId: { in: uniqueWarehouseIds } },
+      ];
+    } else if (employee?.warehouseId) {
+      // Fallback to primary warehouseId
+      where.OR = [
+        { fromWarehouseId: employee.warehouseId },
+        { toWarehouseId: employee.warehouseId },
+      ];
     } else {
       // Manager with no warehouse assignment sees nothing
       return createPaginatedResponse([], 0, page, limit);
@@ -110,7 +161,7 @@ export async function createTransferRequest(input: CreateTransferRequestInput, e
     throw ApiError.badRequest('Source and destination warehouses must be different');
   }
 
-  // Check source inventory
+  // Check that source warehouse has some stock (but don't require specific quantity)
   const sourceInventory = await prisma.inventory.findUnique({
     where: {
       productId_warehouseId: {
@@ -120,17 +171,17 @@ export async function createTransferRequest(input: CreateTransferRequestInput, e
     },
   });
 
-  if (!sourceInventory || Number(sourceInventory.quantity) < input.quantity) {
-    throw ApiError.badRequest('Insufficient stock in source warehouse');
+  if (!sourceInventory || Number(sourceInventory.quantity) <= 0) {
+    throw ApiError.badRequest('No stock available in source warehouse');
   }
 
-  // Create transfer request
+  // Create transfer request without quantity (quantity will be set during approval)
   const request = await prisma.stockTransferRequest.create({
     data: {
       productId: input.productId,
       fromWarehouseId: input.fromWarehouseId,
       toWarehouseId: input.toWarehouseId,
-      quantity: input.quantity,
+      quantity: null, // Will be set during approval
       requestedBy: employeeId,
       notes: input.notes,
       status: 'pending',
@@ -141,6 +192,21 @@ export async function createTransferRequest(input: CreateTransferRequestInput, e
       toWarehouse: { select: { id: true, name: true, code: true } },
       requester: { select: { id: true, fullName: true } },
     },
+  });
+
+  // Create alert for transfer request
+  setImmediate(async () => {
+    try {
+      await createTransferRequestAlert(
+        request.id,
+        request.product.name,
+        request.fromWarehouse.name,
+        request.toWarehouse.name,
+        request.requester.fullName
+      );
+    } catch (error) {
+      console.error('Failed to create transfer request alert:', error);
+    }
   });
 
   return request;
@@ -171,21 +237,47 @@ export async function approveTransferRequest(
 
   // Verify permissions
   if (employeeRole === 'manager') {
-    // Manager must be assigned to the source warehouse
+    // Manager must be assigned to either the source OR destination warehouse
     const employee = await prisma.employee.findUnique({
       where: { id: employeeId },
-      include: { warehouse: true },
+      include: {
+        warehouses: {
+          select: { warehouseId: true },
+        },
+      },
     });
 
-    if (!employee || employee.warehouseId !== request.fromWarehouseId) {
-      throw ApiError.forbidden('You can only approve transfer requests from your assigned warehouse');
+    if (!employee) {
+      throw ApiError.forbidden('Employee not found');
+    }
+
+    // Check if manager has access to destination warehouse (preferred) or source warehouse
+    const hasDestinationAccess = employee.warehouses.some(
+      (ew) => ew.warehouseId === request.toWarehouseId
+    );
+    const hasSourceAccess = employee.warehouses.some(
+      (ew) => ew.warehouseId === request.fromWarehouseId
+    );
+    
+    // Also check primary warehouseId for backward compatibility
+    const hasPrimaryDestinationAccess = employee.warehouseId === request.toWarehouseId;
+    const hasPrimarySourceAccess = employee.warehouseId === request.fromWarehouseId;
+
+    if (!hasDestinationAccess && !hasSourceAccess && !hasPrimaryDestinationAccess && !hasPrimarySourceAccess) {
+      throw ApiError.forbidden('You can only approve transfer requests for warehouses you are assigned to');
     }
   } else if (employeeRole !== 'admin') {
     throw ApiError.forbidden('Only managers and administrators can approve transfer requests');
   }
 
-  // If approved, perform the transfer
+  // If approved, set the quantity and update status - don't transfer stock yet
+  // Stock will be transferred when the receiving warehouse marks it as received
   if (input.status === 'approved') {
+    // Quantity is required when approving
+    if (!input.quantity || input.quantity <= 0) {
+      throw ApiError.badRequest('Quantity is required when approving a transfer request');
+    }
+
     // Verify stock is still available
     const sourceInventory = await prisma.inventory.findUnique({
       where: {
@@ -196,28 +288,27 @@ export async function approveTransferRequest(
       },
     });
 
-    if (!sourceInventory || Number(sourceInventory.quantity) < Number(request.quantity)) {
-      throw ApiError.badRequest('Insufficient stock in source warehouse');
+    if (!sourceInventory || Number(sourceInventory.quantity) < input.quantity) {
+      throw ApiError.badRequest(`Insufficient stock in source warehouse. Available: ${Number(sourceInventory.quantity)}, Requested: ${input.quantity}`);
     }
 
-    // Perform transfer
-    const transferInput: TransferStockInput = {
-      productId: request.productId,
-      fromWarehouseId: request.fromWarehouseId,
-      toWarehouseId: request.toWarehouseId,
-      quantity: Number(request.quantity),
-      notes: `Approved transfer request ${id}. ${input.notes || ''}`,
-    };
-
-    await transferStock(transferInput, employeeId);
+    // Update request with approved quantity
+    // Don't transfer stock here - stock will be transferred when receiving warehouse marks as received
   }
 
-  // Update request status
+  // Get approver info for alert
+  const approver = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { fullName: true },
+  });
+
+  // Update request status and quantity (if approved)
   const updated = await prisma.stockTransferRequest.update({
     where: { id },
     data: {
       status: input.status,
       approvedBy: employeeId,
+      quantity: input.status === 'approved' && input.quantity ? input.quantity : request.quantity,
       notes: input.notes || request.notes,
     },
     include: {
@@ -228,6 +319,154 @@ export async function approveTransferRequest(
       approver: { select: { id: true, fullName: true } },
     },
   });
+
+  // Create alert based on status
+  setImmediate(async () => {
+    try {
+      if (input.status === 'approved' && approver && input.quantity) {
+        await createTransferApprovalAlert(
+          updated.id,
+          updated.product.name,
+          input.quantity,
+          updated.fromWarehouse.name,
+          updated.toWarehouse.name,
+          approver.fullName
+        );
+      } else if (input.status === 'rejected' && approver) {
+        await createTransferRejectionAlert(
+          updated.id,
+          updated.product.name,
+          updated.fromWarehouse.name,
+          updated.toWarehouse.name,
+          approver.fullName,
+          input.notes || undefined
+        );
+      }
+    } catch (error) {
+      console.error('Failed to create transfer approval/rejection alert:', error);
+    }
+  });
+
+  return updated;
+}
+
+/**
+ * Mark a transfer request as received and perform the actual stock transfer
+ * Only managers/admins of the receiving warehouse can mark as received
+ */
+export async function markTransferRequestAsReceived(
+  id: string,
+  employeeId: string,
+  employeeRole: string
+) {
+  const request = await prisma.stockTransferRequest.findUnique({
+    where: { id },
+    include: {
+      product: true,
+      fromWarehouse: true,
+      toWarehouse: true,
+    },
+  });
+
+  if (!request) {
+    throw ApiError.notFound('Transfer request not found');
+  }
+
+  if (request.status !== 'approved') {
+    throw ApiError.badRequest(`Transfer request must be approved before marking as received. Current status: ${request.status}`);
+  }
+
+  // Verify permissions - only managers/admins of the receiving warehouse can mark as received
+  if (employeeRole === 'manager') {
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      include: {
+        warehouses: {
+          select: { warehouseId: true },
+        },
+      },
+    });
+
+    if (!employee) {
+      throw ApiError.forbidden('Employee not found');
+    }
+
+    // Manager must be assigned to the receiving warehouse (toWarehouseId)
+    const hasReceivingWarehouseAccess = employee.warehouses.some(
+      (ew) => ew.warehouseId === request.toWarehouseId
+    );
+    const hasPrimaryReceivingWarehouseAccess = employee.warehouseId === request.toWarehouseId;
+
+    if (!hasReceivingWarehouseAccess && !hasPrimaryReceivingWarehouseAccess) {
+      throw ApiError.forbidden('You can only mark transfer requests as received for your assigned receiving warehouse');
+    }
+  } else if (employeeRole !== 'admin') {
+    throw ApiError.forbidden('Only managers and administrators can mark transfer requests as received');
+  }
+
+  // Verify stock is still available in source warehouse
+  const sourceInventory = await prisma.inventory.findUnique({
+    where: {
+      productId_warehouseId: {
+        productId: request.productId,
+        warehouseId: request.fromWarehouseId,
+      },
+    },
+  });
+
+  if (!sourceInventory || Number(sourceInventory.quantity) < Number(request.quantity)) {
+    throw ApiError.badRequest('Insufficient stock in source warehouse');
+  }
+
+  // Perform the actual transfer
+  const transferInput: TransferStockInput = {
+    productId: request.productId,
+    fromWarehouseId: request.fromWarehouseId,
+    toWarehouseId: request.toWarehouseId,
+    quantity: Number(request.quantity),
+    notes: `Transfer completed - marked as received by ${employeeId}`,
+  };
+
+  await transferStock(transferInput, employeeId);
+
+  // Get receiver info for alert
+  const receiver = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { fullName: true },
+  });
+
+  // Update request status to completed
+  const updated = await prisma.stockTransferRequest.update({
+    where: { id },
+    data: {
+      status: 'completed',
+    },
+    include: {
+      product: { select: { id: true, name: true, sku: true } },
+      fromWarehouse: { select: { id: true, name: true, code: true } },
+      toWarehouse: { select: { id: true, name: true, code: true } },
+      requester: { select: { id: true, fullName: true } },
+      approver: { select: { id: true, fullName: true } },
+    },
+  });
+
+  // Create alert for transfer reception
+  if (receiver && updated.quantity) {
+    setImmediate(async () => {
+      try {
+        await createTransferReceptionAlert(
+          updated.id,
+          updated.product.name,
+          Number(updated.quantity),
+          updated.fromWarehouse.name,
+          updated.toWarehouse.name,
+          receiver.fullName
+        );
+      } catch (error) {
+        console.error('Failed to create transfer reception alert:', error);
+      }
+    });
+  }
 
   return updated;
 }

@@ -3,6 +3,7 @@ import prisma from '../../config/database.js';
 import { ApiError, PaginationQuery } from '../../common/types/index.js';
 import { getPaginationParams, createPaginatedResponse } from '../../common/utils/pagination.js';
 import { CreateEmployeeInput, UpdateEmployeeInput, ResetPinInput } from './employees.schema.js';
+import { createUserCreationAlert } from '../alerts/alerts.helper.js';
 
 export async function getEmployees(
   query: PaginationQuery & { search?: string; roleId?: string; isActive?: string },
@@ -207,25 +208,63 @@ export async function createEmployee(
   }
 
   // Apply hierarchy restrictions
-  if (currentEmployeeRole === 'manager') {
+  if (currentEmployeeRole === 'admin') {
+    // Admin cannot create other admins
+    if (role.name === 'admin') {
+      throw ApiError.forbidden('You cannot create users with admin role');
+    }
+  } else if (currentEmployeeRole === 'manager') {
     // Manager can only create Sellers
     if (role.name !== 'cashier') {
       throw ApiError.forbidden('You can only create Sellers for your assigned warehouses');
     }
 
-    // Manager can only assign to their own warehouse
+    // Manager can only assign to their assigned warehouses
     if (currentEmployeeId) {
       const currentEmployee = await prisma.employee.findUnique({
         where: { id: currentEmployeeId },
-        include: { warehouse: true },
+        include: { 
+          warehouse: true,
+          warehouses: {
+            include: { warehouse: true }
+          }
+        },
       });
 
-      if (!currentEmployee?.warehouseId) {
+      if (!currentEmployee) {
         throw ApiError.forbidden('You must be assigned to a warehouse to create employees');
       }
 
-      if (input.warehouseId !== currentEmployee.warehouseId) {
-        throw ApiError.forbidden('You can only create employees for your assigned warehouse');
+      // Get all warehouse IDs the manager is assigned to
+      const managerWarehouseIds: string[] = [];
+      if (currentEmployee.warehouseId) {
+        managerWarehouseIds.push(currentEmployee.warehouseId);
+      }
+      currentEmployee.warehouses.forEach(ew => {
+        if (!managerWarehouseIds.includes(ew.warehouseId)) {
+          managerWarehouseIds.push(ew.warehouseId);
+        }
+      });
+
+      if (managerWarehouseIds.length === 0) {
+        throw ApiError.forbidden('You must be assigned to a warehouse to create employees');
+      }
+
+      // Check if the warehouse being assigned is one of the manager's warehouses
+      const warehouseIds = input.warehouseIds || [];
+      const allAssignedWarehouses = input.warehouseId 
+        ? [input.warehouseId, ...warehouseIds]
+        : warehouseIds;
+
+      // At least one warehouse must be assigned for a Seller
+      if (allAssignedWarehouses.length === 0) {
+        throw ApiError.badRequest('At least one warehouse is required for Seller role');
+      }
+
+      const hasAccess = allAssignedWarehouses.every(whId => managerWarehouseIds.includes(whId));
+      
+      if (!hasAccess) {
+        throw ApiError.forbidden('You can only create employees for your assigned warehouses');
       }
     }
   }
@@ -268,6 +307,32 @@ export async function createEmployee(
     },
   });
 
+  // Get creator info for alert
+  let creatorName = 'Admin';
+  if (currentEmployeeId) {
+    const creator = await prisma.employee.findUnique({
+      where: { id: currentEmployeeId },
+      select: { fullName: true },
+    });
+    if (creator) {
+      creatorName = creator.fullName;
+    }
+  }
+
+  // Create alert for user creation
+  setImmediate(async () => {
+    try {
+      await createUserCreationAlert(
+        employee.id,
+        employee.fullName,
+        employee.role.name,
+        creatorName
+      );
+    } catch (error) {
+      console.error('Failed to create user creation alert:', error);
+    }
+  });
+
   const { pinCode, ...rest } = employee;
   return rest;
 }
@@ -280,7 +345,13 @@ export async function updateEmployee(
 ) {
   const employee = await prisma.employee.findUnique({
     where: { id },
-    include: { role: true, warehouse: true },
+    include: { 
+      role: true, 
+      warehouse: true,
+      warehouses: {
+        include: { warehouse: true }
+      }
+    },
   });
 
   if (!employee) {
@@ -288,25 +359,73 @@ export async function updateEmployee(
   }
 
   // Apply hierarchy restrictions
-  if (currentEmployeeRole === 'manager') {
-    // Manager cannot modify Managers or Admins
-    if (employee.role.name === 'manager' || employee.role.name === 'admin') {
-      throw ApiError.forbidden('You cannot modify Managers or Administrators. You can only manage Sellers assigned to your warehouse.');
+  if (currentEmployeeRole === 'admin') {
+    // Admin cannot modify other admins
+    if (employee.role.name === 'admin') {
+      throw ApiError.forbidden('You cannot modify users with admin role');
     }
 
-    // Manager can only modify Sellers from their warehouse
+    // Admin cannot change role to admin
+    if (input.roleId) {
+      const newRole = await prisma.role.findUnique({
+        where: { id: input.roleId },
+      });
+      if (newRole && newRole.name === 'admin') {
+        throw ApiError.forbidden('You cannot assign the admin role');
+      }
+    }
+  } else if (currentEmployeeRole === 'manager') {
+    // Manager cannot modify Managers or Admins
+    if (employee.role.name === 'manager' || employee.role.name === 'admin') {
+      throw ApiError.forbidden('You cannot modify Managers or Administrators. You can only manage Sellers assigned to your warehouses.');
+    }
+
+    // Manager can only modify Sellers from their assigned warehouses
     if (currentEmployeeId) {
       const currentEmployee = await prisma.employee.findUnique({
         where: { id: currentEmployeeId },
-        include: { warehouse: true },
+        include: { 
+          warehouse: true,
+          warehouses: {
+            include: { warehouse: true }
+          }
+        },
       });
 
-      if (!currentEmployee?.warehouseId) {
+      if (!currentEmployee) {
         throw ApiError.forbidden('You must be assigned to a warehouse to modify employees');
       }
 
-      if (employee.warehouseId !== currentEmployee.warehouseId) {
-        throw ApiError.forbidden('You can only modify employees from your assigned warehouse');
+      // Get all warehouse IDs the manager is assigned to
+      const managerWarehouseIds: string[] = [];
+      if (currentEmployee.warehouseId) {
+        managerWarehouseIds.push(currentEmployee.warehouseId);
+      }
+      currentEmployee.warehouses.forEach(ew => {
+        if (!managerWarehouseIds.includes(ew.warehouseId)) {
+          managerWarehouseIds.push(ew.warehouseId);
+        }
+      });
+
+      if (managerWarehouseIds.length === 0) {
+        throw ApiError.forbidden('You must be assigned to a warehouse to modify employees');
+      }
+
+      // Check if the employee is assigned to one of the manager's warehouses
+      const employeeWarehouseIds: string[] = [];
+      if (employee.warehouseId) {
+        employeeWarehouseIds.push(employee.warehouseId);
+      }
+      employee.warehouses.forEach(ew => {
+        if (!employeeWarehouseIds.includes(ew.warehouseId)) {
+          employeeWarehouseIds.push(ew.warehouseId);
+        }
+      });
+
+      const hasAccess = employeeWarehouseIds.some(whId => managerWarehouseIds.includes(whId));
+      
+      if (!hasAccess) {
+        throw ApiError.forbidden('You can only modify employees assigned to your warehouses');
       }
 
       // If changing role, ensure it's still a Seller (cannot promote to Manager or Admin)
@@ -318,12 +437,26 @@ export async function updateEmployee(
           throw ApiError.forbidden('You can only assign the Seller role. You cannot promote employees to Manager or Admin.');
         }
       }
+
+      // If changing warehouse assignments, ensure they are within manager's warehouses
+      if (input.warehouseIds !== undefined || input.warehouseId !== undefined) {
+        const newWarehouseIds = input.warehouseIds || [];
+        const newPrimaryWarehouse = input.warehouseId;
+        const allNewWarehouses = newPrimaryWarehouse 
+          ? [newPrimaryWarehouse, ...newWarehouseIds]
+          : newWarehouseIds;
+
+        const hasAccessToNewWarehouses = allNewWarehouses.every(whId => managerWarehouseIds.includes(whId));
+        
+        if (!hasAccessToNewWarehouses && allNewWarehouses.length > 0) {
+          throw ApiError.forbidden('You can only assign employees to your warehouses');
+        }
+      }
     }
   } else if (currentEmployeeRole === 'cashier') {
     // Seller cannot modify any employees
     throw ApiError.forbidden('You do not have permission to modify employees');
   }
-  // Admin can modify all (no restriction)
 
   // Check phone uniqueness if changing
   if (input.phone && input.phone !== employee.phone) {
@@ -402,13 +535,89 @@ export async function updateEmployee(
   return rest;
 }
 
-export async function deleteEmployee(id: string) {
+export async function deleteEmployee(
+  id: string,
+  currentEmployeeId?: string,
+  currentEmployeeRole?: string
+) {
   const employee = await prisma.employee.findUnique({
     where: { id },
+    include: {
+      role: true,
+      warehouse: true,
+      warehouses: {
+        include: { warehouse: true }
+      }
+    },
   });
 
   if (!employee) {
     throw ApiError.notFound('Employee not found');
+  }
+
+  // Apply hierarchy restrictions
+  if (currentEmployeeRole === 'admin') {
+    // Admin cannot delete/deactivate other admins
+    if (employee.role.name === 'admin') {
+      throw ApiError.forbidden('You cannot delete or deactivate users with admin role');
+    }
+  } else if (currentEmployeeRole === 'manager') {
+    // Manager cannot delete/deactivate Managers or Admins
+    if (employee.role.name === 'manager' || employee.role.name === 'admin') {
+      throw ApiError.forbidden('You cannot delete or deactivate Managers or Administrators. You can only manage Sellers assigned to your warehouses.');
+    }
+
+    // Manager can only delete/deactivate Sellers from their assigned warehouses
+    if (currentEmployeeId) {
+      const currentEmployee = await prisma.employee.findUnique({
+        where: { id: currentEmployeeId },
+        include: { 
+          warehouse: true,
+          warehouses: {
+            include: { warehouse: true }
+          }
+        },
+      });
+
+      if (!currentEmployee) {
+        throw ApiError.forbidden('You must be assigned to a warehouse to delete employees');
+      }
+
+      // Get all warehouse IDs the manager is assigned to
+      const managerWarehouseIds: string[] = [];
+      if (currentEmployee.warehouseId) {
+        managerWarehouseIds.push(currentEmployee.warehouseId);
+      }
+      currentEmployee.warehouses.forEach(ew => {
+        if (!managerWarehouseIds.includes(ew.warehouseId)) {
+          managerWarehouseIds.push(ew.warehouseId);
+        }
+      });
+
+      if (managerWarehouseIds.length === 0) {
+        throw ApiError.forbidden('You must be assigned to a warehouse to delete employees');
+      }
+
+      // Check if the employee is assigned to one of the manager's warehouses
+      const employeeWarehouseIds: string[] = [];
+      if (employee.warehouseId) {
+        employeeWarehouseIds.push(employee.warehouseId);
+      }
+      employee.warehouses.forEach(ew => {
+        if (!employeeWarehouseIds.includes(ew.warehouseId)) {
+          employeeWarehouseIds.push(ew.warehouseId);
+        }
+      });
+
+      const hasAccess = employeeWarehouseIds.some(whId => managerWarehouseIds.includes(whId));
+      
+      if (!hasAccess) {
+        throw ApiError.forbidden('You can only delete employees assigned to your warehouses');
+      }
+    }
+  } else if (currentEmployeeRole === 'cashier') {
+    // Seller cannot delete any employees
+    throw ApiError.forbidden('You do not have permission to delete employees');
   }
 
   // Soft delete - set inactive

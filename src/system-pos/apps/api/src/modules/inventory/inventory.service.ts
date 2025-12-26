@@ -2,9 +2,11 @@ import { Decimal } from '@prisma/client/runtime/library';
 import prisma from '../../config/database.js';
 import { ApiError, PaginationQuery } from '../../common/types/index.js';
 import { getPaginationParams, createPaginatedResponse } from '../../common/utils/pagination.js';
-import { requireWarehouseAccess } from '../../common/middleware/auth.js';
+import { requireWarehouseAccess, validateWarehouseAccess } from '../../common/middleware/auth.js';
 import { STOCK_MOVEMENT_TYPES } from '../../config/constants.js';
 import { AdjustStockInput, TransferStockInput, SetStockLevelsInput } from './inventory.schema.js';
+import { createTransferRequest } from './transfer-requests.service.js';
+import { CreateTransferRequestInput } from './transfer-requests.schema.js';
 
 interface InventoryQuery extends PaginationQuery {
   warehouseId?: string;
@@ -272,14 +274,14 @@ export async function adjustStock(input: AdjustStockInput, employeeId: string) {
   return inventory;
 }
 
+/**
+ * Internal function to perform actual stock transfer (used only when transfer request is approved)
+ * This should NOT be called directly - use createTransferRequest and approveTransferRequest instead
+ */
 export async function transferStock(input: TransferStockInput, employeeId: string) {
   if (input.fromWarehouseId === input.toWarehouseId) {
     throw ApiError.badRequest('Source and destination warehouses must be different');
   }
-
-  // Validate warehouse access - employee must have access to source warehouse
-  // (destination warehouse access is optional, as transfers can be requested)
-  await requireWarehouseAccess(employeeId, input.fromWarehouseId);
 
   // Verify product exists
   const product = await prisma.product.findUnique({

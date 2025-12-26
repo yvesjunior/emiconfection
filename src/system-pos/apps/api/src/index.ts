@@ -19,6 +19,7 @@ import { salesRouter } from './modules/sales/sales.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
 import { expensesRouter } from './modules/expenses/expenses.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
+import { alertsRouter } from './modules/alerts/alerts.routes.js';
 
 dotenv.config();
 
@@ -60,6 +61,7 @@ app.get('/api', (_req, res) => {
       '/api/settings',
       '/api/expenses',
       '/api/reports',
+      '/api/alerts',
     ],
   });
 });
@@ -78,6 +80,7 @@ app.use('/api/sales', salesRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/expenses', expensesRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/alerts', alertsRouter);
 
 // Error handler (must be last)
 app.use(errorHandler);

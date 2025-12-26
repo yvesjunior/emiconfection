@@ -234,13 +234,10 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
       throw ApiError.badRequest(`Insufficient loyalty points. Customer has ${customer.loyaltyPoints} points.`);
     }
 
-    // Get conversion rate from settings
-    const conversionRateSetting = await prisma.setting.findUnique({
-      where: { key: 'loyalty_points_conversion_rate' },
-    });
-
-    const conversionRate = conversionRateSetting 
-      ? Number(conversionRateSetting.value) 
+    // Get conversion rate from SystemSettings (global settings, admin-only)
+    const systemSettings = await prisma.systemSettings.findFirst();
+    const conversionRate = systemSettings?.loyaltyPointsConversionRate 
+      ? Number(systemSettings.loyaltyPointsConversionRate)
       : 1.0; // Default: 1 point = 1 FCFA
 
     // Calculate discount from points
@@ -271,13 +268,20 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
 
   // Calculate change for cash payments
   const payments = input.payments.map((payment) => {
+    const basePayment = {
+      method: payment.method,
+      amount: payment.amount,
+      amountReceived: payment.amountReceived,
+      reference: payment.reference,
+    };
+    
     if (payment.method === 'cash' && payment.amountReceived) {
       return {
-        ...payment,
+        ...basePayment,
         changeGiven: payment.amountReceived - payment.amount,
       };
     }
-    return payment;
+    return basePayment;
   });
 
   // Generate invoice number
@@ -378,13 +382,10 @@ export async function createSale(input: CreateSaleInput, employeeId: string) {
 
     // Add loyalty points if customer exists and points were not used
     if (input.customerId && loyaltyPointsUsed === 0) {
-      // Get attribution rate from settings
-      const attributionRateSetting = await tx.setting.findUnique({
-        where: { key: 'loyalty_points_attribution_rate' },
-      });
-
-      const attributionRate = attributionRateSetting 
-        ? Number(attributionRateSetting.value) 
+      // Get attribution rate from SystemSettings (global settings, admin-only)
+      const systemSettings = await tx.systemSettings.findFirst();
+      const attributionRate = systemSettings?.loyaltyPointsAttributionRate
+        ? Number(systemSettings.loyaltyPointsAttributionRate)
         : 0.01; // Default: 1% of total
 
       // Calculate points to award

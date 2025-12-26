@@ -41,9 +41,11 @@ export default function WarehousesListScreen() {
   const router = useRouter();
   const [search, setSearch] = useState('');
   const hasPermission = useAuthStore((state) => state.hasPermission);
+  const employee = useAuthStore((state) => state.employee);
   const mode = useAppModeStore((state) => state.mode);
   
   const canManage = hasPermission('warehouses:manage');
+  const isAdmin = employee?.role?.name === 'admin';
   const isTabMode = mode === 'manage'; // When in manage mode, this is a tab
 
   // Fetch warehouses
@@ -57,22 +59,39 @@ export default function WarehousesListScreen() {
 
   const allWarehouses: Warehouse[] = data?.data || [];
   
+  // Filter warehouses: admins see all, managers see only assigned warehouses
+  const accessibleWarehouses = isAdmin 
+    ? allWarehouses 
+    : allWarehouses.filter((w) => {
+        const hasAccess = employee?.warehouses?.some((ew: any) => ew.id === w.id) ||
+                         employee?.warehouse?.id === w.id;
+        return hasAccess;
+      });
+  
   // Filter by search
   const warehouses = search
-    ? allWarehouses.filter((w) =>
+    ? accessibleWarehouses.filter((w) =>
         w.name.toLowerCase().includes(search.toLowerCase()) ||
         w.code.toLowerCase().includes(search.toLowerCase())
       )
-    : allWarehouses;
+    : accessibleWarehouses;
 
   const handleWarehousePress = useCallback((warehouse: Warehouse) => {
-    if (!canManage) {
+    // Check if user can manage warehouses OR if they have access to this specific warehouse
+    const hasWarehouseAccess = isAdmin || 
+      employee?.warehouses?.some((ew: any) => ew.id === warehouse.id) ||
+      employee?.warehouse?.id === warehouse.id;
+    
+    if (!canManage && !hasWarehouseAccess) {
       Alert.alert('Accès refusé', 'Vous n\'avez pas la permission de gérer les entrepôts');
       return;
     }
+    
+    // Managers can view warehouse details even without warehouses:manage permission
+    // but they can only view, not edit (editing is handled in warehouses-manage screen)
     hapticImpact(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/(app)/warehouses-manage?warehouseId=${warehouse.id}`);
-  }, [canManage, router]);
+  }, [canManage, isAdmin, employee, router]);
 
   const renderWarehouse = ({ item }: { item: Warehouse }) => {
     const employeeCount = item._count?.employees || 0;

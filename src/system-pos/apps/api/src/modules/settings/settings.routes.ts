@@ -89,22 +89,26 @@ router.put('/', requirePermission(PERMISSIONS.SETTINGS_MANAGE), async (req: Auth
 });
 
 // GET /api/settings/loyalty-points - Get loyalty points settings
+// Note: Settings are GLOBAL for the entire system, configured by Admin only
 router.get('/loyalty-points', async (_req: AuthenticatedRequest, res: Response) => {
-  const [attributionRate, conversionRate] = await Promise.all([
-    prisma.setting.findUnique({ where: { key: 'loyalty_points_attribution_rate' } }),
-    prisma.setting.findUnique({ where: { key: 'loyalty_points_conversion_rate' } }),
-  ]);
+  // Get from SystemSettings (global settings for all warehouses)
+  const systemSettings = await prisma.systemSettings.findFirst();
 
   res.json({
     success: true,
     data: {
-      attributionRate: attributionRate ? Number(attributionRate.value) : 0.01, // Default 1%
-      conversionRate: conversionRate ? Number(conversionRate.value) : 1.0, // Default 1:1
+      attributionRate: systemSettings?.loyaltyPointsAttributionRate 
+        ? Number(systemSettings.loyaltyPointsAttributionRate) 
+        : 0.01, // Default 1%
+      conversionRate: systemSettings?.loyaltyPointsConversionRate 
+        ? Number(systemSettings.loyaltyPointsConversionRate) 
+        : 1.0, // Default 1:1
     },
   });
 });
 
 // PUT /api/settings/loyalty-points - Update loyalty points settings (Admin only)
+// Note: Settings are GLOBAL for the entire system - changes apply to all warehouses
 const loyaltyPointsSettingsSchema = z.object({
   attributionRate: z.number().min(0).max(1).optional(), // 0 to 1 (0% to 100%)
   conversionRate: z.number().positive().optional(), // Points to FCFA ratio
@@ -113,29 +117,33 @@ const loyaltyPointsSettingsSchema = z.object({
 router.put('/loyalty-points', requirePermission(PERMISSIONS.SETTINGS_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
   const input = loyaltyPointsSettingsSchema.parse(req.body);
 
-  const updates: Promise<any>[] = [];
-
-  if (input.attributionRate !== undefined) {
-    updates.push(
-      prisma.setting.upsert({
-        where: { key: 'loyalty_points_attribution_rate' },
-        update: { value: String(input.attributionRate), type: 'number' },
-        create: { key: 'loyalty_points_attribution_rate', value: String(input.attributionRate), type: 'number' },
-      })
-    );
+  // Get or create SystemSettings record
+  let systemSettings = await prisma.systemSettings.findFirst();
+  
+  if (!systemSettings) {
+    // Create new SystemSettings record
+    systemSettings = await prisma.systemSettings.create({
+      data: {
+        loyaltyPointsAttributionRate: input.attributionRate ?? 0.01,
+        loyaltyPointsConversionRate: input.conversionRate ?? 1.0,
+        updatedBy: req.employee!.id,
+      },
+    });
+  } else {
+    // Update existing SystemSettings record
+    systemSettings = await prisma.systemSettings.update({
+      where: { id: systemSettings.id },
+      data: {
+        ...(input.attributionRate !== undefined && { 
+          loyaltyPointsAttributionRate: input.attributionRate 
+        }),
+        ...(input.conversionRate !== undefined && { 
+          loyaltyPointsConversionRate: input.conversionRate 
+        }),
+        updatedBy: req.employee!.id,
+      },
+    });
   }
-
-  if (input.conversionRate !== undefined) {
-    updates.push(
-      prisma.setting.upsert({
-        where: { key: 'loyalty_points_conversion_rate' },
-        update: { value: String(input.conversionRate), type: 'number' },
-        create: { key: 'loyalty_points_conversion_rate', value: String(input.conversionRate), type: 'number' },
-      })
-    );
-  }
-
-  await Promise.all(updates);
 
   res.json({ success: true, message: 'Loyalty points settings updated successfully' });
 });

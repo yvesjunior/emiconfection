@@ -63,7 +63,11 @@ router.put('/:id', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req: 
 
 // DELETE /api/employees/:id - Delete (deactivate) employee
 router.delete('/:id', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req: AuthenticatedRequest, res: Response) => {
-  const result = await employeesService.deleteEmployee(req.params.id);
+  const result = await employeesService.deleteEmployee(
+    req.params.id,
+    req.employee!.id,
+    req.employee!.roleName
+  );
   res.json({ success: true, ...result });
 });
 
