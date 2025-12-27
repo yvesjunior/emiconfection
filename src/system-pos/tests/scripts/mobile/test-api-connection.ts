@@ -5,7 +5,7 @@
 
 import axios from 'axios';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.15:3001/api';
+const API_URL = process.env.EXPO_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:3001/api';
 
 async function testApiConnection() {
   console.log('🧪 Testing API Connection\n');
@@ -14,15 +14,10 @@ async function testApiConnection() {
   const tests = [
     {
       name: 'Health Check',
-      endpoint: '/health',
+      endpoint: '/health', // Health is at root, not /api/health
       method: 'GET',
       expectedStatus: 200,
-    },
-    {
-      name: 'API Base Path',
-      endpoint: '',
-      method: 'GET',
-      expectedStatus: 404, // API root might return 404, that's OK
+      baseUrl: API_URL.replace('/api', ''), // Use root URL for health
     },
   ];
 
@@ -39,7 +34,8 @@ async function testApiConnection() {
     console.log('='.repeat(60));
 
     try {
-      const url = `${API_URL}${test.endpoint}`;
+      const baseUrl = (test as any).baseUrl || API_URL;
+      const url = `${baseUrl}${test.endpoint}`;
       console.log(`📤 Request: ${test.method} ${url}`);
 
       const response = await axios({

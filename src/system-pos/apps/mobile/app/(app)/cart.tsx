@@ -761,7 +761,7 @@ export default function CartScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView testID="cart-screen" style={styles.container} edges={['top']}>
       {/* Warehouse Name Bar */}
       {currentWarehouse && (
         <View style={styles.warehouseBar}>

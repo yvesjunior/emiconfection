@@ -123,35 +123,102 @@ system-pos/
 
 ## 🧪 Tests
 
-All test scripts are centralized in `tests/scripts/`:
+All test scripts are centralized in `tests/scripts/` and based on [TEST_SUITE.md](./TEST_SUITE.md):
+
+### 🚀 Quick Start - Single Command (Does Everything!)
 
 ```bash
-# Run all tests (API + Mobile + Admin)
-npx tsx tests/scripts/run-all.ts
+# Run ALL tests - automatically handles setup if needed!
+./tests/run-all.sh
 
-# Run API tests only
-npx tsx tests/scripts/api/run-all.ts
+# Or using npm
+npm test
+```
 
-# Run Mobile tests only
+**That's it!** The script automatically:
+- Checks database connection
+- **Sets up environment automatically if needed** (migrations, seed, test users)
+- Checks API server
+- Runs all tests
+
+**No separate setup step needed!** The script handles everything.
+
+### 📋 Manual Setup (Optional)
+
+If you want to setup the environment separately (useful for CI/CD):
+
+```bash
+./tests/setup-test-env.sh
+
+# Or using npm
+npm run test:setup
+```
+
+### 🎯 Run Specific Categories
+
+```bash
+# Run specific test categories
+./tests/run-tests.sh api          # API tests only
+./tests/run-tests.sh mobile       # Mobile tests only
+./tests/run-tests.sh api mobile   # Multiple categories
+
+# Or using npm
+npm run test:api
+npm run test:mobile
+```
+
+### 📝 Manual Execution (Alternative)
+
+```bash
+# Run all tests directly
+npx tsx tests/scripts/run-all-tests.ts
+
+# Run specific test suites
+npx tsx tests/scripts/api/test-authentication.ts      # Tests 1-2
+npx tsx tests/scripts/api/test-permissions.ts        # Tests 3-6
+npx tsx tests/scripts/api/test-transfers-workflow.ts # Tests 7-14
+npx tsx tests/scripts/api/test-alerts-system.ts      # Tests 15-22
+```
+
+# Run specific test suites
+npx tsx tests/scripts/api/test-authentication.ts      # Tests 1-2
+npx tsx tests/scripts/api/test-permissions.ts        # Tests 3-6
+npx tsx tests/scripts/api/test-transfers-workflow.ts # Tests 7-14
+npx tsx tests/scripts/api/test-alerts-system.ts      # Tests 15-22
+
+# Run Mobile tests
 npx tsx tests/scripts/mobile/run-all.ts
 
-# Run a specific test
-npx tsx tests/scripts/api/test-admin-login-api.ts
-npx tsx tests/scripts/api/alerts.test.ts
+# Run specific mobile feature tests
 npx tsx tests/scripts/mobile/test-login-flow.ts
-
-# Or using npm (from respective app directories)
-cd apps/mobile && npm run test
+npx tsx tests/scripts/mobile/test-cart-operations.ts
+npx tsx tests/scripts/mobile/test-sales-workflow.ts
+npx tsx tests/scripts/mobile/test-products-browsing.ts
+npx tsx tests/scripts/mobile/test-customers.ts
+npx tsx tests/scripts/mobile/test-inventory-management.ts
 ```
 
 **Test Structure:**
-- `tests/scripts/api/` - Backend API tests
+- `tests/scripts/api/` - Backend API tests (authentication, permissions, transfers, alerts)
 - `tests/scripts/mobile/` - Mobile app integration tests  
 - `tests/scripts/admin/` - Admin panel tests (when available)
 
+**Test Coverage:**
+- ✅ Authentication (Tests 1-2)
+- ✅ Permissions & Roles (Tests 3-6)
+- ✅ Stock Transfers (Tests 7-14)
+- ✅ Alerts System (Tests 15-22)
+- ✅ Mobile Login & API Connection
+- ✅ Mobile Cart Operations
+- ✅ Mobile Sales Workflow
+- ✅ Mobile Products Browsing
+- ✅ Mobile Customer Management
+- ✅ Mobile Inventory Management
+- ⏳ Navigation, UI, Performance (manual tests)
+
 See [tests/README.md](./tests/README.md) for complete test documentation.
 
-**Manual tests:** See [TEST_SUITE.md](./TEST_SUITE.md) for 40 test scenarios
+**Manual tests:** See [TEST_SUITE.md](./TEST_SUITE.md) for all 40 test scenarios
 
 ---
 

@@ -14,11 +14,16 @@ async function runAllTests() {
   const testsDir = __dirname;
   const testFiles = fs
     .readdirSync(testsDir)
-    .filter((file) => file.startsWith('test-') && file.endsWith('.ts') && file !== 'run-all.ts')
+    .filter((file) => 
+      (file.startsWith('test-') || file.endsWith('.test.ts')) && 
+      file !== 'run-all.ts' &&
+      file !== 'run-detox-tests.ts' &&
+      !file.endsWith('.md')
+    )
     .sort();
 
   console.log('🧪 Running all mobile app test scripts...\n');
-  console.log(`Found ${testFiles.length} test files\n`);
+  console.log(`Found ${testFiles.length} integration test files\n`);
 
   const results: Array<{ file: string; success: boolean; error?: string }> = [];
 
@@ -52,6 +57,52 @@ async function runAllTests() {
     }
   }
 
+  // Optionally run Detox E2E tests
+  const includeE2E = process.argv.includes('--e2e') || process.argv.includes('--detox');
+  const skipBuild = process.argv.includes('--skip-build') || process.argv.includes('--no-build');
+  
+  if (includeE2E) {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log('📱 Running Detox E2E Tests');
+    console.log('='.repeat(60));
+    if (skipBuild) {
+      console.log('⏭️  Build will be skipped (using existing build)');
+    } else {
+      console.log('⚠️  Note: E2E tests require emulator/simulator and native app build');
+    }
+    console.log('');
+    
+    try {
+      const { runDetoxTests } = await import('./run-detox-tests');
+      const e2eResult = await runDetoxTests('ios', 'debug', skipBuild);
+      results.push({
+        file: 'Detox E2E Tests',
+        success: e2eResult.success,
+        error: e2eResult.error,
+      });
+      
+      if (e2eResult.success) {
+        console.log(`✅ Detox E2E Tests - PASSED`);
+      } else {
+        console.error(`❌ Detox E2E Tests - FAILED`);
+        if (e2eResult.error) {
+          console.error(`Error: ${e2eResult.error}`);
+        }
+      }
+    } catch (e2eError: any) {
+      console.error(`❌ Detox E2E Tests - FAILED`);
+      console.error(`Error: ${e2eError.message}`);
+      results.push({
+        file: 'Detox E2E Tests',
+        success: false,
+        error: e2eError.message,
+      });
+    }
+  } else {
+    console.log(`\n💡 Tip: Add --e2e flag to include Detox E2E tests`);
+    console.log(`💡 Tip: Add --skip-build flag to skip app build (faster, requires existing build)`);
+  }
+
   // Summary
   console.log(`\n${'='.repeat(60)}`);
   console.log('📊 Test Summary');
@@ -68,7 +119,7 @@ async function runAllTests() {
     results
       .filter((r) => !r.success)
       .forEach((r) => {
-        console.log(`  - ${r.file}`);
+        console.log(`  - ${r.file}${r.error ? `: ${r.error}` : ''}`);
       });
   }
 

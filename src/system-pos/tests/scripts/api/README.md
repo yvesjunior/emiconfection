@@ -7,6 +7,13 @@ This folder contains all testing scripts for the POS API system.
 - `alerts.test.ts` - Test suite for Manager Alerts System
 - `transfers.test.ts` - Test suite for Stock Transfer System
 
+## Test Suites (Based on TEST_SUITE.md)
+
+- `test-authentication.ts` - Authentication tests (Tests 1-2)
+- `test-permissions.ts` - Permissions and roles tests (Tests 3-6)
+- `test-transfers-workflow.ts` - Complete transfer workflow tests (Tests 7-14)
+- `test-alerts-system.ts` - Alerts system tests (Tests 15-22)
+
 ## Authentication Tests
 
 - `test-admin-login-api.ts` - Test admin login via HTTP API endpoint
@@ -40,6 +47,12 @@ npx tsx tests/scripts/api/test-admin-login-api.ts
 ```bash
 # From system-pos root
 npx tsx tests/scripts/api/run-all.ts
+```
+
+### Run complete test suite (based on TEST_SUITE.md):
+```bash
+# From system-pos root
+npx tsx tests/scripts/run-test-suite.ts
 ```
 
 ### Run all authentication tests:

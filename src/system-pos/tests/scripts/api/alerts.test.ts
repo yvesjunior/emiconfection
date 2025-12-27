@@ -6,6 +6,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import * as alertsService from '../../../apps/api/src/modules/alerts/alerts.service.js';
 import * as alertsHelper from '../../../apps/api/src/modules/alerts/alerts.helper.js';
 
@@ -20,26 +21,32 @@ let testProductId: string;
 async function setupTestData() {
   console.log('🔧 Setting up test data...\n');
 
-  // Create test admin
-  const admin = await prisma.employee.create({
-    data: {
-      phone: '1234567890',
-      fullName: 'Test Admin',
-      role: {
-        connectOrCreate: {
-          where: { name: 'admin' },
-          create: { name: 'admin', description: 'Admin role', isSystem: true },
-        },
+// Create or get test admin
+const admin = await prisma.employee.upsert({
+  where: { phone: '0999999999' },
+  update: {},
+  create: {
+    phone: '0999999999',
+    fullName: 'Test Admin',
+    pinCode: await bcrypt.hash('1234', 10),
+    role: {
+      connectOrCreate: {
+        where: { name: 'admin' },
+        create: { name: 'admin', description: 'Admin role', isSystem: true },
       },
     },
-  });
+  },
+});
   testAdminId = admin.id;
 
-  // Create test manager
-  const manager = await prisma.employee.create({
-    data: {
-      phone: '1234567891',
+  // Create or get test manager
+  const manager = await prisma.employee.upsert({
+    where: { phone: '0999999998' },
+    update: {},
+    create: {
+      phone: '0999999998',
       fullName: 'Test Manager',
+      pinCode: await bcrypt.hash('1234', 10),
       role: {
         connectOrCreate: {
           where: { name: 'manager' },
@@ -50,9 +57,11 @@ async function setupTestData() {
   });
   testManagerId = manager.id;
 
-  // Create test warehouse
-  const warehouse = await prisma.warehouse.create({
-    data: {
+  // Create or get test warehouse
+  const warehouse = await prisma.warehouse.upsert({
+    where: { code: 'TEST-WH' },
+    update: {},
+    create: {
       name: 'Test Warehouse',
       code: 'TEST-WH',
       type: 'BOUTIQUE',
@@ -61,36 +70,80 @@ async function setupTestData() {
   testWarehouseId = warehouse.id;
 
   // Assign manager to warehouse
-  await prisma.employeeWarehouse.create({
-    data: {
+  await prisma.employeeWarehouse.upsert({
+    where: {
+      employeeId_warehouseId: {
+        employeeId: testManagerId,
+        warehouseId: testWarehouseId,
+      },
+    },
+    update: {},
+    create: {
       employeeId: testManagerId,
       warehouseId: testWarehouseId,
     },
   });
 
-  // Create test product
-  const product = await prisma.product.create({
-    data: {
-      name: 'Test Product',
-      sku: 'TEST-PROD-001',
-      unit: 'PIECE',
-    },
-  });
-  testProductId = product.id;
+// Create or get test product
+const product = await prisma.product.upsert({
+  where: { sku: 'TEST-PROD-001' },
+  update: {},
+  create: {
+    name: 'Test Product',
+    sku: 'TEST-PROD-001',
+    unit: 'PIECE',
+    costPrice: 10,
+    sellingPrice: 20,
+    isActive: true,
+  },
+});
+testProductId = product.id;
 
   console.log('✅ Test data created\n');
 }
 
 async function cleanupTestData() {
   console.log('🧹 Cleaning up test data...\n');
-
+  
+  // Delete in correct order to respect foreign key constraints
+  // Delete dependent records first
+  await prisma.saleItem.deleteMany({
+    where: {
+      productId: testProductId,
+    },
+  });
+  await prisma.sale.deleteMany({});
+  await prisma.stockMovement.deleteMany({
+    where: {
+      productId: testProductId,
+    },
+  });
+  await prisma.stockTransferRequest.deleteMany({
+    where: {
+      productId: testProductId,
+    },
+  });
   await prisma.managerAlert.deleteMany({});
   await prisma.employeeWarehouse.deleteMany({});
   await prisma.inventory.deleteMany({});
-  await prisma.product.deleteMany({});
-  await prisma.warehouse.deleteMany({});
-  await prisma.employee.deleteMany({});
-
+  await prisma.product.deleteMany({
+    where: {
+      id: testProductId,
+    },
+  });
+  await prisma.warehouse.deleteMany({
+    where: {
+      id: testWarehouseId,
+    },
+  });
+  await prisma.employee.deleteMany({
+    where: {
+      id: {
+        in: [testAdminId, testManagerId],
+      },
+    },
+  });
+  
   console.log('✅ Cleanup complete\n');
 }
 

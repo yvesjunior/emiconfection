@@ -24,10 +24,7 @@
 - (NSURL *)bundleURL
 {
 #if DEBUG
-  // Configure Metro bundler to use port 8082 instead of default 8081
-  // Build URL manually to ensure correct port
-  NSString *jsCodeLocation = @"http://192.168.2.15:8082/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false";
-  return [NSURL URLWithString:jsCodeLocation];
+  return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@".expo/.virtual-metro-entry"];
 #else
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif

@@ -16,7 +16,16 @@
     "build:api": "npm run build --workspace=apps/api",
     "build:admin": "npm run build --workspace=apps/admin",
     "lint": "npm run lint --workspaces --if-present",
-    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules",
+    "test": "./tests/run-all.sh",
+    "test:all": "./tests/run-all.sh",
+    "test:api": "./tests/run-tests.sh api",
+    "test:mobile": "./tests/run-tests.sh mobile",
+    "test:admin": "./tests/run-tests.sh admin",
+    "test:setup": "./tests/setup-test-env.sh",
+    "test:e2e": "./tests/run-detox.sh ios",
+    "test:e2e:ios": "./tests/run-detox.sh ios",
+    "test:e2e:android": "./tests/run-detox.sh android"
   },
   "keywords": [
     "pos",
@@ -30,6 +39,16 @@
     "node": ">=18.0.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.5",
+    "@babel/preset-env": "^7.28.5",
+    "@babel/preset-typescript": "^7.28.5",
+    "@types/bcrypt": "^6.0.0",
+    "babel-jest": "^30.2.0",
+    "bcrypt": "^6.0.0",
     "sharp": "^0.34.5"
+  },
+  "dependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "bcryptjs": "^3.0.3"
   }
 }

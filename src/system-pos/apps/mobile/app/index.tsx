@@ -19,7 +19,7 @@ export default function IndexScreen() {
   }, [isAuthenticated, isLoading]);
 
   return (
-    <View style={styles.container}>
+    <View testID="index-screen" style={styles.container}>
       <ActivityIndicator size="large" color={colors.primary} />
     </View>
   );

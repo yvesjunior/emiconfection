@@ -529,7 +529,7 @@ export default function POSScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView testID="pos-screen" style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
         <View>
@@ -825,6 +825,7 @@ export default function POSScreen() {
 
       {/* Products Grid */}
       <FlatList
+        testID="product-list"
         data={products}
         keyExtractor={(item) => item.id}
         renderItem={renderProduct}

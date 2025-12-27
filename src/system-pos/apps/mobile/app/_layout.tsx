@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Platform } from 'react-native';
 import { useAuthStore } from '../src/store/auth';
 import { useAppModeStore } from '../src/store/appMode';
 
@@ -22,6 +23,46 @@ export default function RootLayout() {
   const loadStoredMode = useAppModeStore((state) => state.loadStoredMode);
   const mode = useAppModeStore((state) => state.mode);
   const setMode = useAppModeStore((state) => state.setMode);
+
+  // Auto-connect to dev server in test environment (Detox)
+  useEffect(() => {
+    if (__DEV__) {
+      // Check if running in Detox test environment
+      const isDetox = typeof global.DETOX !== 'undefined' || process.env.NODE_ENV === 'test';
+      if (isDetox) {
+        // Disable shake gesture for developer menu
+        try {
+          const { DevSettings } = require('react-native');
+          if (DevSettings && DevSettings.setIsShakeToShowDevMenuEnabled) {
+            DevSettings.setIsShakeToShowDevMenuEnabled(false);
+          }
+        } catch (e) {
+          // DevSettings might not be available
+        }
+        
+        // Auto-connect to dev server to skip dev menu screen
+        try {
+          const { DevClient } = require('expo-dev-client');
+          if (DevClient && DevClient.loadApp) {
+            // Try to automatically load the app, bypassing the dev menu
+            setTimeout(() => {
+              try {
+                // Load app directly if dev client supports it
+                const url = 'http://localhost:8081';
+                if (DevClient.loadApp) {
+                  DevClient.loadApp(url);
+                }
+              } catch (e) {
+                console.log('Could not auto-connect to dev server:', e);
+              }
+            }, 500);
+          }
+        } catch (e) {
+          // DevClient might not be available
+        }
+      }
+    }
+  }, []);
 
   useEffect(() => {
     // Load auth and mode with timeout to prevent blocking

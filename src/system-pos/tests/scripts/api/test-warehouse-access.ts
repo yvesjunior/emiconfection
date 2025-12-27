@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { validateWarehouseAccess } from '../src/common/middleware/auth.js';
+import { validateWarehouseAccess } from '../../../apps/api/src/common/middleware/auth.js';
 
 const prisma = new PrismaClient();
 
@@ -9,7 +9,7 @@ async function testWarehouseAccess() {
   try {
     // Find manager-1
     const manager = await prisma.employee.findUnique({
-      where: { phone: '0622222222' },
+      where: { phone: '0622' },
       include: {
         role: true,
         warehouses: {

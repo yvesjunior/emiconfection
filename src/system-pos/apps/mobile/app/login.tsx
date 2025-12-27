@@ -472,10 +472,11 @@ export default function LoginScreen() {
 
   const renderDots = () => {
     return (
-      <View style={styles.dotsContainer}>
+      <View testID="pin-dots-container" style={styles.dotsContainer}>
         {[...Array(6)].map((_, index) => (
           <View
             key={index}
+            testID={`pin-dot-${index}`}
             style={[
               styles.dot,
               index < pin.length && styles.dotFilled,
@@ -495,12 +496,13 @@ export default function LoginScreen() {
     ];
 
     return (
-      <View style={styles.keypad}>
+      <View testID="keypad-container" style={styles.keypad}>
         {rows.map((row, rowIndex) => (
           <View key={rowIndex} style={styles.keypadRow}>
             {row.map((key, keyIndex) => (
               <TouchableOpacity
                 key={keyIndex}
+                testID={key === 'back' ? 'keypad-backspace' : key ? `keypad-${key}` : 'keypad-empty'}
                 style={[
                   styles.keypadButton,
                   key === '' && styles.keypadButtonEmpty,
@@ -559,6 +561,7 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
+      testID="login-screen"
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
@@ -580,6 +583,7 @@ export default function LoginScreen() {
             <View style={styles.phoneInputWrapper}>
               <Ionicons name="call-outline" size={24} color={colors.textMuted} style={styles.phoneIcon} />
               <TextInput
+                testID="phone-input"
                 ref={inputRef}
                 style={styles.phoneInput}
                 value={phone}
@@ -592,6 +596,7 @@ export default function LoginScreen() {
               />
               {phone.length >= 4 && (
                 <TouchableOpacity
+                  testID="phone-submit-button"
                   style={styles.phoneSubmitButton}
                   onPress={handlePhoneSubmit}
                 >

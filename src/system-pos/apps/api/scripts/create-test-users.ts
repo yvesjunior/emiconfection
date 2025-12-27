@@ -51,7 +51,6 @@ async function main() {
     where: { phone: '0611' },
     update: {
       fullName: 'Admin',
-      password: defaultPassword,
       pinCode: defaultPin,
       roleId: adminRole.id,
       warehouseId: warehouse.id,
@@ -60,11 +59,25 @@ async function main() {
     create: {
       phone: '0611',
       fullName: 'Admin',
-      password: defaultPassword,
       pinCode: defaultPin,
       roleId: adminRole.id,
       warehouseId: warehouse.id,
       isActive: true,
+    },
+  });
+
+  // Ensure Admin has warehouse assignment in EmployeeWarehouse table
+  await prisma.employeeWarehouse.upsert({
+    where: {
+      employeeId_warehouseId: {
+        employeeId: admin.id,
+        warehouseId: warehouse.id,
+      },
+    },
+    update: {},
+    create: {
+      employeeId: admin.id,
+      warehouseId: warehouse.id,
     },
   });
 
@@ -79,7 +92,6 @@ async function main() {
     where: { phone: '0622' },
     update: {
       fullName: 'manager-1',
-      password: defaultPassword,
       pinCode: defaultPin,
       roleId: managerRole.id,
       warehouseId: warehouse.id,
@@ -88,11 +100,25 @@ async function main() {
     create: {
       phone: '0622',
       fullName: 'manager-1',
-      password: defaultPassword,
       pinCode: defaultPin,
       roleId: managerRole.id,
       warehouseId: warehouse.id,
       isActive: true,
+    },
+  });
+
+  // Ensure Manager has warehouse assignment in EmployeeWarehouse table
+  await prisma.employeeWarehouse.upsert({
+    where: {
+      employeeId_warehouseId: {
+        employeeId: manager.id,
+        warehouseId: warehouse.id,
+      },
+    },
+    update: {},
+    create: {
+      employeeId: manager.id,
+      warehouseId: warehouse.id,
     },
   });
 
@@ -107,7 +133,6 @@ async function main() {
     where: { phone: '0633' },
     update: {
       fullName: 'seller-1',
-      password: defaultPassword,
       pinCode: defaultPin,
       roleId: cashierRole.id,
       warehouseId: warehouse.id,
@@ -116,11 +141,25 @@ async function main() {
     create: {
       phone: '0633',
       fullName: 'seller-1',
-      password: defaultPassword,
       pinCode: defaultPin,
       roleId: cashierRole.id,
       warehouseId: warehouse.id,
       isActive: true,
+    },
+  });
+
+  // Ensure Seller has warehouse assignment in EmployeeWarehouse table
+  await prisma.employeeWarehouse.upsert({
+    where: {
+      employeeId_warehouseId: {
+        employeeId: seller.id,
+        warehouseId: warehouse.id,
+      },
+    },
+    update: {},
+    create: {
+      employeeId: seller.id,
+      warehouseId: warehouse.id,
     },
   });
 

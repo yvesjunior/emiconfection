@@ -6,6 +6,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import * as transferService from '../../../apps/api/src/modules/inventory/transfer-requests.service.js';
 import { Decimal } from '@prisma/client/runtime/library';
 
@@ -22,11 +23,14 @@ let testProductId: string;
 async function setupTestData() {
   console.log('🔧 Setting up test data...\n');
 
-  // Create admin
-  const admin = await prisma.employee.create({
-    data: {
+  // Create or get admin
+  const admin = await prisma.employee.upsert({
+    where: { phone: '1111111111' },
+    update: {},
+    create: {
       phone: '1111111111',
       fullName: 'Test Admin',
+      pinCode: await bcrypt.hash('1234', 10),
       role: {
         connectOrCreate: {
           where: { name: 'admin' },
@@ -37,11 +41,14 @@ async function setupTestData() {
   });
   testAdminId = admin.id;
 
-  // Create managers
-  const managerA = await prisma.employee.create({
-    data: {
+  // Create or get managers
+  const managerA = await prisma.employee.upsert({
+    where: { phone: '2222222222' },
+    update: {},
+    create: {
       phone: '2222222222',
       fullName: 'Manager A',
+      pinCode: await bcrypt.hash('1234', 10),
       role: {
         connectOrCreate: {
           where: { name: 'manager' },
@@ -52,10 +59,13 @@ async function setupTestData() {
   });
   testManagerAId = managerA.id;
 
-  const managerB = await prisma.employee.create({
-    data: {
+  const managerB = await prisma.employee.upsert({
+    where: { phone: '3333333333' },
+    update: {},
+    create: {
       phone: '3333333333',
       fullName: 'Manager B',
+      pinCode: await bcrypt.hash('1234', 10),
       role: {
         connectOrCreate: {
           where: { name: 'manager' },
@@ -66,9 +76,11 @@ async function setupTestData() {
   });
   testManagerBId = managerB.id;
 
-  // Create warehouses
-  const warehouseA = await prisma.warehouse.create({
-    data: {
+  // Create or get warehouses
+  const warehouseA = await prisma.warehouse.upsert({
+    where: { code: 'WH-A' },
+    update: {},
+    create: {
       name: 'Warehouse A',
       code: 'WH-A',
       type: 'STOCKAGE',
@@ -76,8 +88,10 @@ async function setupTestData() {
   });
   testWarehouseAId = warehouseA.id;
 
-  const warehouseB = await prisma.warehouse.create({
-    data: {
+  const warehouseB = await prisma.warehouse.upsert({
+    where: { code: 'WH-B' },
+    update: {},
+    create: {
       name: 'Warehouse B',
       code: 'WH-B',
       type: 'BOUTIQUE',
@@ -86,26 +100,45 @@ async function setupTestData() {
   testWarehouseBId = warehouseB.id;
 
   // Assign managers to warehouses
-  await prisma.employeeWarehouse.create({
-    data: {
+  await prisma.employeeWarehouse.upsert({
+    where: {
+      employeeId_warehouseId: {
+        employeeId: testManagerAId,
+        warehouseId: testWarehouseAId,
+      },
+    },
+    update: {},
+    create: {
       employeeId: testManagerAId,
       warehouseId: testWarehouseAId,
     },
   });
 
-  await prisma.employeeWarehouse.create({
-    data: {
+  await prisma.employeeWarehouse.upsert({
+    where: {
+      employeeId_warehouseId: {
+        employeeId: testManagerBId,
+        warehouseId: testWarehouseBId,
+      },
+    },
+    update: {},
+    create: {
       employeeId: testManagerBId,
       warehouseId: testWarehouseBId,
     },
   });
 
-  // Create product
-  const product = await prisma.product.create({
-    data: {
+  // Create or get product
+  const product = await prisma.product.upsert({
+    where: { sku: 'TEST-TRANSFER-001' },
+    update: {},
+    create: {
       name: 'Test Product',
       sku: 'TEST-TRANSFER-001',
       unit: 'PIECE',
+      costPrice: 10,
+      sellingPrice: 20,
+      isActive: true,
     },
   });
   testProductId = product.id;
@@ -126,6 +159,9 @@ async function setupTestData() {
 async function cleanupTestData() {
   console.log('🧹 Cleaning up test data...\n');
 
+  // Delete in correct order to respect foreign key constraints
+  await prisma.saleItem.deleteMany({});
+  await prisma.sale.deleteMany({});
   await prisma.stockTransferRequest.deleteMany({});
   await prisma.stockMovement.deleteMany({});
   await prisma.managerAlert.deleteMany({});
