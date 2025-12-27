@@ -25,7 +25,12 @@
     "test:setup": "./tests/setup-test-env.sh",
     "test:e2e": "./tests/run-detox.sh ios",
     "test:e2e:ios": "./tests/run-detox.sh ios",
-    "test:e2e:android": "./tests/run-detox.sh android"
+    "test:e2e:android": "./tests/run-detox.sh android",
+    "start": "./scripts/start-all.sh",
+    "start:api": "./scripts/start-all.sh --api-only",
+    "start:admin": "./scripts/start-all.sh --admin-only",
+    "start:mobile": "./scripts/start-all.sh --mobile-only",
+    "stop": "./scripts/stop-all.sh"
   },
   "keywords": [
     "pos",

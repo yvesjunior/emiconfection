@@ -7,7 +7,7 @@ A complete Point of Sale system for retail shops with:
 
 **Version** : 1.1.0 | **Status** : ✅ Production Ready
 
-📋 **Documentation** : See [STATUS_SUMMARY.md](./STATUS_SUMMARY.md), [FEATURES.md](./FEATURES.md), [ARCHITECTURE.md](./apps/mobile/ARCHITECTURE.md)
+📋 **Documentation** : See [DEPLOYMENT.md](./DEPLOYMENT.md), [ARCHITECTURE.md](./ARCHITECTURE.md), [TEST_SUITE.md](./TEST_SUITE.md)
 
 ---
 
@@ -28,12 +28,20 @@ npm install
 ### 2. Start Database Services
 
 ```bash
-docker-compose up -d
+# From workspace root
+cd ../..
+docker-compose up -d pos_postgres pos_redis
+
+# Or from system-pos directory
+cd ../..
+docker-compose up -d pos_postgres pos_redis
 ```
 
 This starts:
-- PostgreSQL on port 5432
-- Redis on port 6379
+- PostgreSQL (`pos_postgres`) on port 5432
+- Redis (`pos_redis`) on port 6379
+
+**Note:** The docker-compose.yml file is located in the workspace root, not in system-pos directory.
 
 ### 3. Setup Environment
 
@@ -115,8 +123,9 @@ system-pos/
 │   ├── api/                    # Backend API (Express + Prisma)
 │   ├── admin/                  # Admin Panel (Next.js)
 │   └── mobile/                 # Mobile POS (React Native + Expo)
-├── docker-compose.yml          # Database services
 └── [Documentation files]
+
+Note: docker-compose.yml is located in the workspace root (../..)
 ```
 
 ---

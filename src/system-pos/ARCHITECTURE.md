@@ -23,6 +23,112 @@ Cette application mobile est un système de point de vente (POS) pour la gestion
 
 ---
 
+## 🛠️ Technology Stack
+
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **Backend** | Node.js + Express + TypeScript | REST API server |
+| **ORM** | Prisma | Database access |
+| **Database** | PostgreSQL | Primary data store |
+| **Cache** | Redis | Session & data caching |
+| **Admin Panel** | Next.js 14 + Tailwind CSS + shadcn/ui | Web management interface |
+| **Mobile App** | React Native + Expo | POS terminal app |
+| **State (Mobile)** | Zustand | App state management |
+| **API Client** | React Query (TanStack Query) | Data fetching + caching |
+| **Offline DB** | WatermelonDB | Offline-first local database |
+| **Auth** | JWT + PIN code | Employee authentication |
+| **File Storage** | Local / S3 / Cloudinary | Product images |
+
+---
+
+## 📁 Project Structure
+
+```
+system-pos/
+├── apps/
+│   ├── api/                      # Backend API
+│   │   ├── src/modules/          # Feature modules (auth, products, sales, etc.)
+│   │   ├── prisma/               # Database schema
+│   │   └── package.json
+│   ├── admin/                    # Admin Panel (Next.js)
+│   │   └── src/                  # Next.js app router, components, services
+│   └── mobile/                   # Mobile POS (React Native + Expo)
+│       ├── src/app/              # App entry & navigation
+│       ├── src/features/         # Feature modules
+│       └── package.json
+├── tests/                        # Test scripts
+│   └── scripts/
+│       ├── api/                  # API tests
+│       ├── mobile/               # Mobile tests
+│       └── admin/                # Admin tests
+├── ARCHITECTURE.md               # This file
+├── DEPLOYMENT.md                 # Deployment guide
+├── TEST_SUITE.md                 # Test scenarios
+├── TODO.md                       # Implementation tasks
+└── README.md                     # Getting started
+
+Note: docker-compose.yml is located in the workspace root (../..)
+```
+
+---
+
+## 🚀 Development Phases
+
+### Phase 1: Backend Foundation ✅
+- ✅ Project setup (monorepo, TypeScript)
+- ✅ Database schema (Prisma)
+- ✅ Authentication module (JWT + PIN)
+- ✅ RBAC middleware
+- ✅ Core CRUD endpoints
+
+### Phase 2: Backend Complete ✅
+- ✅ Sales module
+- ✅ Inventory management
+- ✅ Reports generation
+- ✅ File upload (images)
+- ✅ Audit logging
+
+### Phase 3: Admin Panel ✅
+- ✅ Next.js setup
+- ✅ Authentication flow
+- ✅ Dashboard
+- ✅ All management modules
+- ✅ Reports & charts
+
+### Phase 4: Mobile POS (React Native) ✅
+- ✅ Expo project setup
+- ✅ State management (Zustand)
+- ✅ PIN login with expo-local-authentication
+- ✅ POS interface
+- ✅ Barcode scanning (expo-camera)
+- ✅ Checkout flow
+- ✅ Receipt printing (Bluetooth thermal)
+- ✅ Offline support (WatermelonDB)
+
+### Phase 5: Polish & Deploy ✅
+- ✅ Testing
+- ✅ Performance optimization
+- ✅ Documentation
+- ✅ Deployment setup
+- ✅ Production deployment
+
+---
+
+## ⚠️ Key Decisions Made
+
+1. **Mobile as Primary POS** - The mobile app is the main sales terminal
+2. **React Native + Expo** - Cross-platform with TypeScript (same as backend)
+3. **No Payment Device Integration** - Payments are recorded manually
+4. **Role-Based Access** - Employees have roles with specific permissions
+5. **Offline Support** - WatermelonDB for offline-first architecture
+6. **Bluetooth Printing** - Support for thermal receipt printers
+7. **Multi-Warehouse** - Support for multiple warehouse/store locations
+8. **TypeScript Everywhere** - Shared types across API, Admin, and Mobile
+9. **Products are Global** - Products created once, available everywhere
+10. **Stock Management is Scoped** - Managers can only manage stock for assigned warehouses
+
+---
+
 ## ✅ Fonctionnalités Implémentées
 
 ### 🔔 Système d'Alertes pour les Admins (11 points)
@@ -1294,6 +1400,119 @@ Les alertes sont créées automatiquement lors de :
 ```typescript
 'sell'    // Mode vente
 'manage'  // Mode gestion
+```
+
+---
+
+## 📦 Architecture: Product & Inventory Management per Warehouse
+
+### Current State Analysis
+
+**Product Model:**
+- Products are **global** (single `Product` table)
+- SKU and barcode are unique across the entire system
+- Product creation is global - once created, it exists for all warehouses
+
+**Inventory Model:**
+- Inventory is **per warehouse** (`Inventory` table with `productId` + `warehouseId`)
+- Each warehouse has its own quantity for each product
+- Inventory entries are created on-demand (when stock is set or transferred)
+
+**Employee-Warehouse Relationship:**
+- Currently: **One-to-Many** (Employee can have multiple warehouses via `EmployeeWarehouse` junction table)
+- Supports multiple warehouse assignments for Managers
+
+### Core Principles
+
+1. **Selling is per warehouse (Boutique)** ✅ Already implemented
+2. **Management mode is NOT attached to warehouse** - This is the key change
+3. **Product creation is global** - Products are created once, available everywhere
+4. **Stock management is scoped to assigned warehouses** - Managers/Admins can only set stock for warehouses they're assigned to
+
+### Product Creation Flow
+
+**When Manager/Admin creates a product:**
+1. Product is created globally (no warehouse context needed)
+2. Manager can set initial stock **only for warehouses they're assigned to**
+3. Other warehouses see the product but with **0 quantity** (no Inventory entry needed - UI shows 0)
+4. Managers of other warehouses can later set stock for their warehouses
+
+**When Manager/Admin manages inventory:**
+1. Manager can view all products (global view)
+2. Manager can set/adjust stock **only for warehouses they're assigned to**
+3. For other warehouses, stock is visible but read-only (shows 0 if no Inventory entry exists)
+
+### Implementation Status
+
+#### ✅ Completed Changes
+
+**1. Schema Updates:**
+- ✅ Added `EmployeeWarehouse` junction table for many-to-many relationship
+- ✅ Updated `Employee` model to support multiple warehouse assignments
+- ✅ Updated `Warehouse` model with new relation
+- ✅ Maintained backward compatibility with `warehouseId` field
+
+**2. Migration:**
+- ✅ Created migration file: `20251226000000_add_employee_warehouses/migration.sql`
+- ✅ Migrates existing `warehouseId` data to `EmployeeWarehouse` table
+- ✅ Maintains backward compatibility
+
+**3. Authentication & Authorization:**
+- ✅ Added `validateWarehouseAccess()` function
+- ✅ Added `requireWarehouseAccess()` function
+- ✅ Validates access based on:
+  - Admin: Access to all warehouses
+  - Manager/Seller: Access only to assigned warehouses (from `EmployeeWarehouse` table or `warehouseId`)
+
+**4. Product Creation:**
+- ✅ Product creation is now **global** (no warehouse context required)
+- ✅ If `warehouseId` and `stock` are provided, validates warehouse access
+- ✅ Only creates inventory for warehouses employee has access to
+- ✅ Products are visible globally (even with 0 stock)
+
+**5. Product Updates:**
+- ✅ Product updates are global
+- ✅ Stock updates validate warehouse access
+- ✅ Only allows stock updates for assigned warehouses
+
+**6. Inventory Management:**
+- ✅ `adjustStock()` validates warehouse access
+- ✅ `transferStock()` validates source warehouse access
+- ✅ Prevents unauthorized stock management
+
+### Validation Rules
+
+**Product Creation:**
+- ✅ Product SKU must be unique globally
+- ✅ Product barcode must be unique globally (if provided)
+- ✅ If `warehouseId` provided with stock, must be in employee's assigned warehouses
+- ✅ Admin can set stock for any warehouse
+
+**Inventory Management:**
+- ✅ Can only adjust stock for assigned warehouses
+- ✅ Can view stock for all warehouses (read-only for unassigned)
+- ✅ Admin can adjust stock for any warehouse
+- ✅ Inventory entries created on-demand (when stock > 0)
+
+**Stock Display:**
+- ✅ If Inventory entry exists → Show actual quantity
+- ✅ If Inventory entry doesn't exist → Show 0 (product available but no stock)
+- ✅ Product is always visible globally, regardless of stock
+
+### Benefits
+
+1. **Prevents Duplicate Products**: Products created once globally
+2. **Flexible Stock Management**: Each warehouse manages own stock independently
+3. **Clear Access Control**: Managers scoped to assigned warehouses
+4. **Scalable**: Easy to add new warehouses
+5. **Backward Compatible**: Existing code continues to work
+
+### Database Schema
+
+```
+Employee (1) ──< (N) EmployeeWarehouse (N) >── (1) Warehouse
+     │                                                    │
+     └── warehouseId (backward compat) ─────────────────┘
 ```
 
 ---
